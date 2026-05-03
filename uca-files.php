@@ -211,6 +211,104 @@ if (isset($_POST['rename_item'])) {
     }
 }
 
+if (isset($_POST['protect_item_submit'])) {
+    $item_name = $_POST['protect_item'];
+    $password = $_POST['protect_password'];
+    $password_confirm = $_POST['protect_password_confirm'];
+    
+    if ($password !== $password_confirm) {
+        $action_msg = "Passwords do not match!";
+    } else if (strlen($password) < 1) {
+        $action_msg = "Password cannot be empty!";
+    } else {
+        $item_path = $current_dir . DIRECTORY_SEPARATOR . $item_name;
+        if (file_exists($item_path)) {
+            $key = 'UCA_FILE_PROTECT_' . md5($password . $item_name);
+            
+            if (is_dir($item_path)) {
+                $content = delTreeGetContent($item_path);
+                $encrypted = openssl_encrypt($content, 'aes-256-cbc', $key);
+                $protected_content = json_encode(['type'=>'folder','data'=>base64_encode($encrypted),'name'=>$item_name]);
+            } else {
+                $content = file_get_contents($item_path);
+                $encrypted = openssl_encrypt($content, 'aes-256-cbc', $key);
+                $protected_content = json_encode(['type'=>'file','data'=>base64_encode($encrypted),'name'=>$item_name,'ext'=>pathinfo($item_name, PATHINFO_EXTENSION)]);
+            }
+            
+            file_put_contents($item_path . '.uca_protected', $protected_content);
+            if (is_dir($item_path)) {
+                delTree($item_path);
+            } else {
+                unlink($item_path);
+            }
+            $action_msg = "Password protection applied to '$item_name'";
+        }
+    }
+}
+
+if (isset($_POST['unprotect_item_submit'])) {
+    $item_name = $_POST['unprotect_item'];
+    $password = $_POST['unprotect_password'];
+    
+    $protected_path = $current_dir . DIRECTORY_SEPARATOR . $item_name . '.uca_protected';
+    if (file_exists($protected_path)) {
+        $key = 'UCA_FILE_PROTECT_' . md5($password . $item_name);
+        $protected_content = file_get_contents($protected_path);
+        $decoded = json_decode($protected_content, true);
+        
+        if ($decoded && isset($decoded['data'])) {
+            $decrypted = openssl_decrypt(base64_decode($decoded['data']), 'aes-256-cbc', $key);
+            
+            if ($decrypted !== false && $decrypted !== '') {
+                $original_path = $current_dir . DIRECTORY_SEPARATOR . $item_name;
+                
+                if ($decoded['type'] === 'folder') {
+                    mkdir($original_path, 0755, true);
+                    restoreFolderContent($original_path, $decrypted);
+                } else {
+                    file_put_contents($original_path, $decrypted);
+                }
+                
+                unlink($protected_path);
+                $action_msg = "Protection removed from '$item_name'";
+            } else {
+                $action_msg = "Incorrect password!";
+            }
+        }
+    }
+}
+
+function delTreeGetContent($dir) {
+    $result = [];
+    $files = array_diff(scandir($dir), array('.','..'));
+    foreach ($files as $file) {
+        $path = "$dir/$file";
+        if (is_dir($path)) {
+            $result[$file] = ['type'=>'dir','content'=>delTreeGetContent($path)];
+        } else {
+            $result[$file] = ['type'=>'file','content'=>file_get_contents($path)];
+        }
+    }
+    return $result;
+}
+
+function restoreFolderContent($dir, $json) {
+    $data = json_decode($json, true);
+    foreach ($data as $name => $item) {
+        $path = $dir . DIRECTORY_SEPARATOR . $name;
+        if ($item['type'] === 'dir') {
+            mkdir($path, 0755, true);
+            restoreFolderContent($path, json_encode($item['content']));
+        } else {
+            file_put_contents($path, $item['content']);
+        }
+    }
+}
+
+function isProtected($filename) {
+    return file_exists($filename . '.uca_protected');
+}
+
 function delTree($dir) {
     if (!is_dir($dir)) return;
     $files = array_diff(scandir($dir), array('.','..'));
@@ -900,6 +998,9 @@ foreach ($path_parts as $part) {
             <button class="toolbar-btn" onclick="zipSelected()">
                 <i class="bi bi-file-earmark-zip"></i> Zip
             </button>
+            <button class="toolbar-btn" onclick="extractSelected()" id="unzipBtn" style="display:none;">
+                <i class="bi bi-file-earmark-arrow-down"></i> Unzip
+            </button>
             <div class="toolbar-divider"></div>
             <button class="toolbar-btn" data-bs-toggle="modal" data-bs-target="#encryptModal" style="color: var(--accent);">
                 <i class="bi bi-shield-lock"></i> Encrypt
@@ -1064,15 +1165,28 @@ foreach ($path_parts as $part) {
         </div>
         <div class="context-menu-divider"></div>
         <div class="context-menu-item" onclick="contextZip()" id="ctxZipItem">
-            <i class="bi bi-file-earmark-zip"></i> Compress
+            <i class="bi bi-file-earmark-zip"></i> Compress to ZIP
         </div>
         <div class="context-menu-item" onclick="contextExtract()" id="ctxExtractItem" style="display:none;">
-            <i class="bi bi-file-earmark-zip"></i> Extract Here
+            <i class="bi bi-file-earmark-arrow-down"></i> Extract Here
+        </div>
+        <div class="context-menu-item" onclick="contextExtractTo()" id="ctxExtractToItem" style="display:none;">
+            <i class="bi bi-folder-plus"></i> Extract To...
         </div>
         <div class="context-menu-item" onclick="contextViewZip()" id="ctxViewZipItem" style="display:none;">
             <i class="bi bi-eye"></i> View Contents
         </div>
         <div class="context-menu-divider"></div>
+        <div class="context-menu-item" onclick="contextProtect()" id="ctxProtectItem">
+            <i class="bi bi-shield-lock"></i> Password Protect
+        </div>
+        <div class="context-menu-item" onclick="contextUnprotect()" id="ctxUnprotectItem" style="display:none;">
+            <i class="bi bi-shield-unlock"></i> Remove Protection
+        </div>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item" onclick="contextProperties()">
+            <i class="bi bi-info-circle"></i> Properties
+        </div>
         <div class="context-menu-item" onclick="contextDelete()" style="color: #f85149;">
             <i class="bi bi-trash"></i> Delete
         </div>
@@ -1275,6 +1389,78 @@ foreach ($path_parts as $part) {
         </div>
     </div>
 
+    <!-- Properties Modal -->
+    <div class="modal fade" id="propertiesModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-info-circle"></i> Properties</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="propsContent"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-outline-uca" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Password Protect Modal -->
+    <div class="modal fade" id="protectModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-shield-lock"></i> Password Protect</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <input type="hidden" name="protect_item" id="protectItemName">
+                        <p style="color: var(--text-muted);">Enter a password to protect this file/folder. The content will be encrypted.</p>
+                        <div class="mb-3">
+                            <label class="form-label">Password</label>
+                            <input type="password" name="protect_password" class="form-control" required placeholder="Enter password">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Confirm Password</label>
+                            <input type="password" name="protect_password_confirm" class="form-control" required placeholder="Confirm password">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="submit" name="protect_item_submit" class="btn-uca">Protect</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Remove Protection Modal -->
+    <div class="modal fade" id="unprotectModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-shield-unlock"></i> Remove Protection</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <input type="hidden" name="unprotect_item" id="unprotectItemName">
+                        <p style="color: var(--text-muted);">Enter the password to remove protection from this file/folder.</p>
+                        <div class="mb-3">
+                            <label class="form-label">Password</label>
+                            <input type="password" name="unprotect_password" class="form-control" required placeholder="Enter password">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="submit" name="unprotect_item_submit" class="btn-uca">Remove Protection</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <?php endif; ?>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
@@ -1439,6 +1625,69 @@ foreach ($path_parts as $part) {
             hideContextMenu();
         }
         
+        function contextProperties() {
+            const formData = new FormData();
+            formData.append('get_properties', contextItem);
+            
+            fetch('', { method: 'POST', body: formData })
+                .then(r => r.text())
+                .then(html => {
+                    const match = html.match(/<div id="propsContent">([\s\S]*?)<\/div>\s*<div class="modal-footer">/);
+                    document.getElementById('propsContent').innerHTML = match ? match[1] : 'Cannot load properties';
+                });
+            
+            new bootstrap.Modal(document.getElementById('propertiesModal')).show();
+            hideContextMenu();
+        }
+        
+        function contextProtect() {
+            document.getElementById('protectItemName').value = contextItem;
+            new bootstrap.Modal(document.getElementById('protectModal')).show();
+            hideContextMenu();
+        }
+        
+        function contextUnprotect() {
+            document.getElementById('unprotectItemName').value = contextItem;
+            new bootstrap.Modal(document.getElementById('unprotectModal')).show();
+            hideContextMenu();
+        }
+        
+        function contextExtractTo() {
+            showExtractModal(contextItem);
+            hideContextMenu();
+        }
+        
+        function extractSelected() {
+            const checkboxes = document.querySelectorAll('input[name="items[]"]:checked');
+            if (checkboxes.length === 0) {
+                alert('Select a zip file to extract');
+                return;
+            }
+            const file = checkboxes[0].value;
+            const ext = file.split('.').pop().toLowerCase();
+            if (['zip','rar','7z','tar','gz'].includes(ext)) {
+                showExtractModal(file);
+            } else {
+                alert('Selected file is not an archive');
+            }
+        }
+        
+        function checkZipSelection() {
+            const checkboxes = document.querySelectorAll('input[name="items[]"]:checked');
+            const unzipBtn = document.getElementById('unzipBtn');
+            if (checkboxes.length === 1) {
+                const file = checkboxes[0].value;
+                const ext = file.split('.').pop().toLowerCase();
+                if (['zip','rar','7z','tar','gz'].includes(ext)) {
+                    unzipBtn.style.display = 'flex';
+                } else {
+                    unzipBtn.style.display = 'none';
+                }
+            } else {
+                unzipBtn.style.display = 'none';
+            }
+        }
+        
         function showExtractModal(filename) {
             document.getElementById('extractZipFile').value = filename;
             new bootstrap.Modal(document.getElementById('extractZipModal')).show();
@@ -1451,6 +1700,7 @@ foreach ($path_parts as $part) {
         function updateSelection() {
             const checkboxes = document.querySelectorAll('input[name="items[]"]:checked');
             document.getElementById('selectionStatus').textContent = checkboxes.length + ' items selected';
+            checkZipSelection();
         }
         
         function deleteSelected() {
@@ -1581,6 +1831,41 @@ foreach ($path_parts as $part) {
             }
             exit;
         }
+    }
+    
+    if (isset($_POST['get_properties'])) {
+        $item = $_POST['get_properties'];
+        $path = $current_dir . DIRECTORY_SEPARATOR . $item;
+        
+        echo '<div id="propsContent">';
+        if (file_exists($path)) {
+            $is_dir = is_dir($path);
+            $size = $is_dir ? 'Folder' : formatSize(filesize($path));
+            $modified = date('F j, Y, g:i a', filemtime($path));
+            $created = date('F j, Y, g:i a', filectime($path));
+            $perms = substr(sprintf('%o', fileperms($path)), -4);
+            $is_protected = isProtected($path);
+            
+            echo '<div style="padding:10px;">';
+            echo '<div style="margin-bottom:15px;"><i class="bi ' . ($is_dir ? 'bi-folder2' : 'bi-file-earmark') . '" style="font-size:2rem;color:' . ($is_dir ? '#dcb67a' : '#569cd6') . ';"></i></div>';
+            echo '<table style="width:100%;font-size:13px;">';
+            echo '<tr><td style="color:var(--text-muted);width:120px;">Name:</td><td>' . htmlspecialchars($item) . '</td></tr>';
+            echo '<tr><td style="color:var(--text-muted);">Type:</td><td>' . ($is_dir ? 'File Folder' : ucfirst(pathinfo($item, PATHINFO_EXTENSION)) . ' File') . '</td></tr>';
+            echo '<tr><td style="color:var(--text-muted);">Size:</td><td>' . $size . '</td></tr>';
+            echo '<tr><td style="color:var(--text-muted);">Modified:</td><td>' . $modified . '</td></tr>';
+            echo '<tr><td style="color:var(--text-muted);">Created:</td><td>' . $created . '</td></tr>';
+            echo '<tr><td style="color:var(--text-muted);">Permissions:</td><td>' . $perms . '</td></tr>';
+            echo '<tr><td style="color:var(--text-muted);">Protection:</td><td>' . ($is_protected ? '<span style="color:#f85149;"><i class="bi bi-shield-lock"></i> Password Protected</span>' : '<span style="color:#4ec9b0;">None</span>') . '</td></tr>';
+            echo '</table>';
+            echo '</div>';
+        } else {
+            echo '<p>Item not found</p>';
+        }
+        echo '</div>';
+        echo '<div class="modal-footer">';
+        echo '<button type="button" class="btn-outline-uca" data-bs-dismiss="modal">Close</button>';
+        echo '</div>';
+        exit;
     }
     
     if (isset($_GET['download'])) {
