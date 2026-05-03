@@ -625,12 +625,16 @@ function isZip($filename) {
     return in_array($ext, ['zip','rar','7z','tar','gz']);
 }
 
+$show_hidden = isset($_GET['show_hidden']) && $_GET['show_hidden'] === '0' ? false : true;
+
 $files = [];
 $folders = [];
 
 if ($dh = opendir($current_dir)) {
     while (($item = readdir($dh)) !== FALSE) {
         if ($item === '.' || $item === '..') continue;
+        // Skip hidden files/folders if show_hidden is false
+        if (!$show_hidden && substr($item, 0, 1) === '.') continue;
         $path = $current_dir . DIRECTORY_SEPARATOR . $item;
         if (is_dir($path)) {
             $folders[] = $item;
@@ -2355,6 +2359,28 @@ foreach ($path_parts as $part) {
             document.execCommand('copy');
             alert('Link copied to clipboard!');
         }
+        
+        function toggleHiddenFiles() {
+            const showHidden = document.getElementById('showHidden').checked;
+            const url = new URL(window.location.href);
+            if (showHidden) {
+                url.searchParams.delete('show_hidden');
+            } else {
+                url.searchParams.set('show_hidden', '0');
+            }
+            window.location.href = url.toString();
+        }
+        
+        // Initialize checkbox state based on current URL
+        document.addEventListener('DOMContentLoaded', function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const showHiddenCheckbox = document.getElementById('showHidden');
+            if (urlParams.get('show_hidden') === '0') {
+                showHiddenCheckbox.checked = false;
+            }
+            
+            showHiddenCheckbox.addEventListener('change', toggleHiddenFiles);
+        });
         
         function showExtractModal(filename) {
             document.getElementById('extractZipFile').value = filename;
