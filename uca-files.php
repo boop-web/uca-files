@@ -1,24 +1,60 @@
 <?php
 session_start();
 
+$lock_file = '.uca_lock';
+$encryption_key = 'UCA_FILES_SECRET_KEY_2024';
+
+if (file_exists($lock_file)) {
+    $locked_content = file_get_contents($lock_file);
+    $decrypted = openssl_decrypt($locked_content, 'aes-256-cbc', $encryption_key);
+    if ($decrypted === 'LOCKED') {
+        $page_locked = true;
+    }
+}
+
+if (isset($_POST['encrypt_page'])) {
+    $passcode = $_POST['passcode'] ?? '';
+    if (preg_match('/^\d{6}$/', $passcode)) {
+        $encrypted = openssl_encrypt('LOCKED', 'aes-256-cbc', $encryption_key);
+        file_put_contents($lock_file, $encrypted);
+        $page_locked = true;
+        $action_msg = "Page encrypted!";
+    }
+}
+
+if (isset($_POST['decrypt_page'])) {
+    $passcode = $_POST['passcode'] ?? '';
+    if (preg_match('/^\d{6}$/', $passcode)) {
+        if (file_exists($lock_file)) {
+            $locked_content = file_get_contents($lock_file);
+            $decrypted = openssl_decrypt($locked_content, 'aes-256-cbc', $encryption_key);
+            if ($decrypted === 'LOCKED') {
+                unlink($lock_file);
+                $page_locked = false;
+                $action_msg = "Page decrypted!";
+            }
+        }
+    }
+}
+
 $current_dir = isset($_GET['dir']) ? $_GET['dir'] : '.';
 $current_dir = realpath($current_dir) ?: '.';
-if ($current_dir === '.' || !is_dir($current_dir)) {
+if ($current_dir === '.' || !$current_dir || !is_dir($current_dir)) {
     $current_dir = getcwd();
 }
 
 $upload_msg = '';
 $action_msg = '';
+$edit_file = isset($_GET['edit']) ? $_GET['edit'] : null;
 
 if (isset($_POST['upload'])) {
     if (!empty($_FILES['files']['name'][0])) {
-        $target_dir = $current_dir;
         $uploaded = 0;
         $errors = [];
         foreach ($_FILES['files']['name'] as $key => $name) {
             if ($_FILES['files']['error'][$key] === UPLOAD_ERR_OK) {
                 $tmp = $_FILES['files']['tmp_name'][$key];
-                $dest = $target_dir . DIRECTORY_SEPARATOR . $name;
+                $dest = $current_dir . DIRECTORY_SEPARATOR . basename($name);
                 if (move_uploaded_file($tmp, $dest)) {
                     $uploaded++;
                 } else {
@@ -40,6 +76,37 @@ if (isset($_POST['create_folder'])) {
         } else {
             $action_msg = "Folder already exists";
         }
+    }
+}
+
+if (isset($_POST['create_new_file'])) {
+    $file_name = trim($_POST['file_name']);
+    $file_type = $_POST['file_type'] ?? 'txt';
+    
+    $extensions = [
+        'html' => '<!DOCTYPE html>\n<html>\n<head>\n    <meta charset="UTF-8">\n    <title>New Page</title>\n</head>\n<body>\n    \n</body>\n</html>',
+        'php' => '<?php\n\n// Your PHP code here\n\n?>',
+        'css' => '/* Main Styles */\n\nbody {\n    font-family: Arial, sans-serif;\n    margin: 0;\n    padding: 0;\n}\n',
+        'js' => '// JavaScript\n\ndocument.addEventListener("DOMContentLoaded", function() {\n    \n});\n',
+        'json' => '{\n    \n}',
+        'txt' => '',
+        'xml' => '<?xml version="1.0" encoding="UTF-8"?>\n<root>\n    \n</root>',
+        'md' => '# New Document\n\nWrite your content here...\n',
+    ];
+    
+    $final_name = $file_name;
+    if (!preg_match('/\.' . $file_type . '$/i', $file_name)) {
+        $final_name = $file_name . '.' . $file_type;
+    }
+    
+    $file_path = $current_dir . DIRECTORY_SEPARATOR . $final_name;
+    if (!file_exists($file_path)) {
+        $content = $extensions[$file_type] ?? '';
+        file_put_contents($file_path, $content);
+        $action_msg = "File '$final_name' created";
+        $edit_file = $final_name;
+    } else {
+        $action_msg = "File already exists";
     }
 }
 
@@ -85,12 +152,22 @@ if (isset($_POST['create_zip'])) {
 if (isset($_POST['extract_zip'])) {
     $zip_file = $_POST['zip_file'];
     $zip_path = $current_dir . DIRECTORY_SEPARATOR . $zip_file;
+    $extract_folder = $_POST['extract_folder'] ?? '';
+    
+    $target_dir = $current_dir;
+    if ($extract_folder) {
+        $target_dir = $current_dir . DIRECTORY_SEPARATOR . $extract_folder;
+        if (!is_dir($target_dir)) {
+            mkdir($target_dir, 0755, true);
+        }
+    }
+    
     if (file_exists($zip_path) && is_file($zip_path)) {
         $zip = new ZipArchive();
         if ($zip->open($zip_path) === TRUE) {
-            $zip->extractTo($current_dir);
+            $zip->extractTo($target_dir);
             $zip->close();
-            $action_msg = "Extracted $zip_file";
+            $action_msg = "Extracted $zip_file" . ($extract_folder ? " to $extract_folder" : "");
         } else {
             $action_msg = "Failed to extract";
         }
@@ -108,6 +185,29 @@ if (isset($_POST['create_single_zip'])) {
             $zip->close();
             $action_msg = "Created $zip_name";
         }
+    }
+}
+
+if (isset($_POST['save_file'])) {
+    $file_path = $current_dir . DIRECTORY_SEPARATOR . $_POST['filename'];
+    $content = $_POST['content'];
+    if (file_put_contents($file_path, $content) !== false) {
+        $action_msg = "File saved successfully";
+        $edit_file = $_POST['filename'];
+    } else {
+        $action_msg = "Failed to save file";
+    }
+}
+
+if (isset($_POST['rename_item'])) {
+    $old_name = $_POST['old_name'];
+    $new_name = trim($_POST['new_name']);
+    $old_path = $current_dir . DIRECTORY_SEPARATOR . $old_name;
+    $new_path = $current_dir . DIRECTORY_SEPARATOR . $new_name;
+    
+    if ($old_name && $new_name && file_exists($old_path) && !file_exists($new_path)) {
+        rename($old_path, $new_path);
+        $action_msg = "Renamed to '$new_name'";
     }
 }
 
@@ -146,6 +246,10 @@ function formatSize($size) {
     return round($size, 2) . ' ' . $units[$i];
 }
 
+function formatDate($timestamp) {
+    return date('M d, Y H:i', $timestamp);
+}
+
 function getFileIcon($ext) {
     $icons = [
         'jpg'=>'bi-image','jpeg'=>'bi-image','png'=>'bi-image','gif'=>'bi-image','svg'=>'bi-image','webp'=>'bi-image',
@@ -155,20 +259,9 @@ function getFileIcon($ext) {
         'zip'=>'bi-file-earmark-zip','rar'=>'bi-file-earmark-zip','7z'=>'bi-file-earmark-zip','tar'=>'bi-file-earmark-zip','gz'=>'bi-file-earmark-zip',
         'mp3'=>'bi-file-earmark-music','wav'=>'bi-file-earmark-music','ogg'=>'bi-file-earmark-music',
         'mp4'=>'bi-file-earmark-play','avi'=>'bi-file-earmark-play','mkv'=>'bi-file-earmark-play','mov'=>'bi-file-earmark-play',
-        'txt'=>'bi-file-earmark-text','md'=>'bi-file-earmark-text','json'=>'bi-file-earmark-text','xml'=>'bi-file-earmark-text','html'=>'bi-file-earmark-code','css'=>'bi-file-earmark-code','js'=>'bi-file-earmark-code','php'=>'bi-file-earmark-code',
+        'txt'=>'bi-file-earmark-text','md'=>'bi-file-earmark-text','json'=>'bi-file-earmark-text','xml'=>'bi-file-earmark-text','html'=>'bi-file-earmark-code','css'=>'bi-file-earmark-code','js'=>'bi-file-earmark-code','php'=>'bi-file-earmark-code','py'=>'bi-file-earmark-code','c'=>'bi-file-earmark-code','cpp'=>'bi-file-earmark-code','java'=>'bi-file-earmark-code','sql'=>'bi-file-earmark-code','sh'=>'bi-file-earmark-code','bat'=>'bi-file-earmark-code','ps1'=>'bi-file-earmark-code','ini'=>'bi-file-earmark-text','log'=>'bi-file-earmark-text','htaccess'=>'bi-file-earmark-code',
     ];
     return $icons[strtolower($ext)] ?? 'bi-file-earmark';
-}
-
-function getMimeType($filename) {
-    $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-    $types = [
-        'jpg'=>'image/jpeg','jpeg'=>'image/jpeg','png'=>'image/png','gif'=>'image/gif','webp'=>'image/webp','svg'=>'image/svg+xml',
-        'mp3'=>'audio/mpeg','wav'=>'audio/wav','ogg'=>'audio/ogg',
-        'mp4'=>'video/mp4','webm'=>'video/webm',
-        'pdf'=>'application/pdf',
-    ];
-    return $types[$ext] ?? 'application/octet-stream';
 }
 
 function isImage($filename) {
@@ -176,14 +269,14 @@ function isImage($filename) {
     return in_array($ext, ['jpg','jpeg','png','gif','webp','svg','bmp']);
 }
 
-function isVideo($filename) {
+function isEditable($filename) {
     $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-    return in_array($ext, ['mp4','webm','avi','mkv','mov']);
+    return in_array($ext, ['txt','md','json','xml','html','htm','css','js','php','py','c','cpp','java','sql','sh','bat','ps1','ini','cfg','conf','log','htaccess','yaml','yml','sql']);
 }
 
-function isAudio($filename) {
+function isZip($filename) {
     $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-    return in_array($ext, ['mp3','wav','ogg','flac','m4a']);
+    return in_array($ext, ['zip','rar','7z','tar','gz']);
 }
 
 $files = [];
@@ -202,34 +295,12 @@ if ($dh = opendir($current_dir)) {
     closedir($dh);
 }
 
-$sort = $_GET['sort'] ?? 'name';
-$order = $_GET['order'] ?? 'asc';
-
-if ($sort === 'size') {
-    usort($files, function($a, $b) use ($current_dir) {
-        return filesize($current_dir . DIRECTORY_SEPARATOR . $a) - filesize($current_dir . DIRECTORY_SEPARATOR . $b);
-    });
-} elseif ($sort === 'date') {
-    usort($files, function($a, $b) use ($current_dir) {
-        return filemtime($current_dir . DIRECTORY_SEPARATOR . $b) - filemtime($current_dir . DIRECTORY_SEPARATOR . $a);
-    });
-} elseif ($sort === 'type') {
-    usort($files, function($a, $b) {
-        return strcmp(pathinfo($a, PATHINFO_EXTENSION), pathinfo($b, PATHINFO_EXTENSION));
-    });
-} else {
-    natcasesort($files);
-}
-
-if ($order === 'desc') {
-    $folders = array_reverse($folders);
-    $files = array_reverse($files);
-}
+natcasesort($folders);
+natcasesort($files);
 
 $parent_dir = dirname($current_dir);
-if ($parent_dir !== realpath('.')) {
-    $folders = array_merge(['..'], $folders);
-}
+$root_dir = getcwd();
+$is_root = ($current_dir === $root_dir);
 
 $path_parts = explode(DIRECTORY_SEPARATOR, $current_dir);
 $breadcrumbs = [];
@@ -251,67 +322,307 @@ foreach ($path_parts as $part) {
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
         :root {
-            --bg-dark: #0d1117;
-            --bg-card: #161b22;
-            --bg-hover: #21262d;
-            --border: #30363d;
-            --accent: #58a6ff;
-            --accent-green: #3fb950;
-            --accent-orange: #d29922;
-            --accent-red: #f85149;
-            --text: #c9d1d9;
-            --text-muted: #8b949e;
+            --bg-dark: #1e1e1e;
+            --bg-panel: #252526;
+            --bg-item: #2d2d30;
+            --bg-hover: #37373d;
+            --border: #3e3e42;
+            --accent: #0078d4;
+            --accent-green: #4ec9b0;
+            --text: #cccccc;
+            --text-bright: #ffffff;
+            --text-muted: #858585;
         }
         
         * { box-sizing: border-box; }
         
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+        }
+        
         body {
             background: var(--bg-dark);
             color: var(--text);
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            min-height: 100vh;
+            font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+            font-size: 13px;
+            user-select: none;
         }
         
-        .navbar {
-            background: var(--bg-card);
+        .explorer-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        
+        .toolbar {
+            background: var(--bg-panel);
             border-bottom: 1px solid var(--border);
-            padding: 12px 0;
+            padding: 6px 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
         }
         
-        .navbar-brand {
-            color: var(--accent) !important;
-            font-weight: 700;
-            font-size: 1.4rem;
+        .toolbar-btn {
+            background: transparent;
+            border: none;
+            color: var(--text);
+            padding: 6px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
         }
         
-        .navbar-brand i { margin-right: 8px; }
+        .toolbar-btn:hover {
+            background: var(--bg-hover);
+        }
+        
+        .toolbar-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        
+        .toolbar-divider {
+            width: 1px;
+            height: 20px;
+            background: var(--border);
+            margin: 0 4px;
+        }
+        
+        .address-bar {
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border);
+            padding: 6px 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
         
         .breadcrumb {
-            background: transparent;
-            margin: 0;
-            padding: 0;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex: 1;
+            overflow: hidden;
         }
         
-        .breadcrumb-item a {
-            color: var(--accent);
+        .breadcrumb-item {
+            color: var(--text);
             text-decoration: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            white-space: nowrap;
+            cursor: pointer;
         }
         
-        .breadcrumb-item + .breadcrumb-item::before {
+        .breadcrumb-item:hover {
+            background: var(--bg-hover);
+        }
+        
+        .breadcrumb-item.current {
+            color: var(--text-bright);
+        }
+        
+        .breadcrumb-sep {
             color: var(--text-muted);
+            margin: 0 2px;
         }
         
-        .card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
+        .main-content {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        
+        .sidebar {
+            width: 200px;
+            background: var(--bg-panel);
+            border-right: 1px solid var(--border);
+            padding: 10px 0;
+            flex-shrink: 0;
+            overflow-y: auto;
+        }
+        
+        .sidebar-section {
             margin-bottom: 16px;
         }
         
-        .card-header {
-            background: transparent;
+        .sidebar-title {
+            padding: 8px 16px;
+            color: var(--text-muted);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .sidebar-item {
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            color: var(--text);
+        }
+        
+        .sidebar-item:hover {
+            background: var(--bg-hover);
+        }
+        
+        .sidebar-item i {
+            color: var(--accent);
+        }
+        
+        .file-list-container {
+            flex: 1;
+            overflow: auto;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .file-list-header {
+            display: flex;
+            padding: 8px 16px;
             border-bottom: 1px solid var(--border);
-            padding: 12px 16px;
+            background: var(--bg-panel);
+            font-weight: 600;
+            color: var(--text-muted);
+            font-size: 12px;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        
+        .file-list-header .col-name { flex: 1; }
+        .file-list-header .col-size { width: 100px; text-align: right; }
+        .file-list-header .col-type { width: 150px; }
+        .file-list-header .col-modified { width: 180px; text-align: right; }
+        
+        .file-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+        
+        .file-row {
+            display: flex;
+            padding: 4px 16px;
+            cursor: pointer;
+            border-bottom: 1px solid transparent;
+            align-items: center;
+        }
+        
+        .file-row:hover {
+            background: var(--bg-hover);
+        }
+        
+        .file-row.selected {
+            background: var(--bg-item);
+            border-color: var(--accent);
+        }
+        
+        .file-row .col-name {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            overflow: hidden;
+        }
+        
+        .file-row .col-name span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .file-row .col-size { width: 100px; text-align: right; color: var(--text-muted); }
+        .file-row .col-type { width: 150px; color: var(--text-muted); }
+        .file-row .col-modified { width: 180px; text-align: right; color: var(--text-muted); }
+        
+        .file-icon {
+            font-size: 16px;
+            width: 20px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        
+        .file-icon.folder { color: #dcb67a; }
+        .file-icon.image { color: #b48ead; }
+        .file-icon.code { color: #4ec9b0; }
+        .file-icon.archive { color: #9cdcfe; }
+        .file-icon.video { color: #ce9178; }
+        .file-icon.audio { color: #c586c0; }
+        .file-icon.doc { color: #569cd6; }
+        
+        .file-checkbox {
+            width: 16px;
+            height: 16px;
+            margin-right: 8px;
+            cursor: pointer;
+        }
+        
+        .status-bar {
+            background: var(--accent);
+            color: white;
+            padding: 4px 16px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+        
+        .modal-content {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+        }
+        
+        .modal-header {
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border);
+            color: var(--text-bright);
+        }
+        
+        .modal-footer {
+            border-top: 1px solid var(--border);
+        }
+        
+        .btn-close {
+            filter: invert(1);
+        }
+        
+        .form-control, .form-select {
+            background: var(--bg-item);
+            border: 1px solid var(--border);
+            color: var(--text);
+            font-size: 13px;
+        }
+        
+        .form-control:focus, .form-select:focus {
+            background: var(--bg-item);
+            border-color: var(--accent);
+            color: var(--text);
+            box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.2);
+        }
+        
+        .drop-zone {
+            border: 2px dashed var(--border);
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            transition: all 0.2s;
+            cursor: pointer;
+            margin: 20px;
+        }
+        
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: var(--accent);
+            background: rgba(0, 120, 212, 0.05);
         }
         
         .btn-uca {
@@ -319,375 +630,477 @@ foreach ($path_parts as $part) {
             color: #fff;
             border: none;
             padding: 8px 16px;
-            border-radius: 6px;
+            border-radius: 4px;
             font-weight: 500;
-            transition: all 0.2s;
+            cursor: pointer;
         }
         
         .btn-uca:hover {
-            background: #4090e0;
-            transform: translateY(-1px);
-        }
-        
-        .btn-uca:disabled {
-            opacity: 0.5;
-            transform: none;
+            background: #106ebe;
         }
         
         .btn-outline-uca {
             background: transparent;
-            color: var(--accent);
-            border: 1px solid var(--accent);
+            color: var(--text);
+            border: 1px solid var(--border);
             padding: 6px 12px;
-            border-radius: 6px;
-            transition: all 0.2s;
+            border-radius: 4px;
+            cursor: pointer;
         }
         
         .btn-outline-uca:hover {
-            background: var(--accent);
-            color: #fff;
-        }
-        
-        .file-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-            gap: 12px;
-            padding: 16px;
-        }
-        
-        .file-item {
             background: var(--bg-hover);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 12px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.2s;
-            position: relative;
-        }
-        
-        .file-item:hover {
-            border-color: var(--accent);
-            transform: translateY(-2px);
-        }
-        
-        .file-item.selected {
-            border-color: var(--accent-green);
-            background: rgba(63, 185, 80, 0.1);
-        }
-        
-        .file-item input[type="checkbox"] {
-            position: absolute;
-            top: 8px;
-            left: 8px;
-            width: 18px;
-            height: 18px;
-            cursor: pointer;
-        }
-        
-        .file-icon {
-            font-size: 2.5rem;
-            margin-bottom: 8px;
-            display: block;
-        }
-        
-        .file-icon.img-icon {
-            width: 60px;
-            height: 60px;
-            object-fit: cover;
-            border-radius: 4px;
-            margin: 0 auto 8px;
-        }
-        
-        .file-name {
-            font-size: 0.85rem;
-            word-break: break-all;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-        }
-        
-        .file-size {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            margin-top: 4px;
-        }
-        
-        .action-bar {
-            background: var(--bg-card);
-            border-bottom: 1px solid var(--border);
-            padding: 12px 16px;
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            align-items: center;
-        }
-        
-        .action-bar .btn {
-            padding: 6px 12px;
-            font-size: 0.9rem;
-        }
-        
-        .selection-info {
-            color: var(--accent-green);
-            font-size: 0.9rem;
-            margin-left: auto;
-        }
-        
-        .modal-content {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-        }
-        
-        .modal-header {
-            border-bottom: 1px solid var(--border);
-        }
-        
-        .modal-footer {
-            border-top: 1px solid var(--border);
-        }
-        
-        .form-control, .form-select {
-            background: var(--bg-dark);
-            border: 1px solid var(--border);
-            color: var(--text);
-        }
-        
-        .form-control:focus, .form-select:focus {
-            background: var(--bg-dark);
-            border-color: var(--accent);
-            color: var(--text);
-            box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
-        }
-        
-        .drop-zone {
-            border: 2px dashed var(--border);
-            border-radius: 8px;
-            padding: 30px;
-            text-align: center;
-            transition: all 0.2s;
-            cursor: pointer;
-        }
-        
-        .drop-zone:hover, .drop-zone.dragover {
-            border-color: var(--accent);
-            background: rgba(88, 166, 255, 0.05);
-        }
-        
-        .drop-zone i {
-            font-size: 3rem;
-            color: var(--accent);
-            margin-bottom: 10px;
-        }
-        
-        .progress-container {
-            display: none;
-            margin-top: 15px;
-        }
-        
-        .progress-container.active {
-            display: block;
+            border-color: var(--text-muted);
         }
         
         .alert-uca {
-            background: var(--bg-hover);
+            background: var(--bg-item);
             border: 1px solid var(--border);
             color: var(--text);
-            border-radius: 6px;
-        }
-        
-        .sort-link {
-            color: var(--text-muted);
-            text-decoration: none;
-            font-size: 0.85rem;
-        }
-        
-        .sort-link:hover, .sort-link.active {
-            color: var(--accent);
-        }
-        
-        .zip-content {
-            max-height: 300px;
-            overflow-y: auto;
-            background: var(--bg-dark);
             border-radius: 4px;
-            padding: 8px;
-            font-family: monospace;
-            font-size: 0.85rem;
+            margin: 10px 20px;
+            padding: 10px 16px;
         }
         
-        .zip-item {
-            padding: 4px 8px;
+        .editor-container {
+            display: none;
+            flex-direction: column;
+            height: 100vh;
+            background: #1e1e1e;
+        }
+        
+        .editor-container.active {
+            display: flex;
+        }
+        
+        .editor-toolbar {
+            background: var(--bg-panel);
             border-bottom: 1px solid var(--border);
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
         }
         
-        .zip-item:last-child { border-bottom: none; }
-        
-        .zip-folder { color: var(--accent); }
-        .zip-file { color: var(--text); }
-        
-        @media (max-width: 768px) {
-            .file-grid {
-                grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-            }
-            
-            .action-bar {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            .selection-info {
-                margin-left: 0;
-                text-align: center;
-            }
+        .editor-filename {
+            color: var(--text-bright);
+            font-weight: 500;
         }
         
-        .loading-spinner {
-            display: inline-block;
+        .editor-textarea {
+            flex: 1;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border: none;
+            padding: 16px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            resize: none;
+            outline: none;
+        }
+        
+        /* Context Menu */
+        .context-menu {
+            display: none;
+            position: fixed;
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 4px 0;
+            min-width: 180px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+            z-index: 10000;
+        }
+        
+        .context-menu-item {
+            padding: 8px 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--text);
+        }
+        
+        .context-menu-item:hover {
+            background: var(--bg-hover);
+        }
+        
+        .context-menu-item i {
+            color: var(--accent);
             width: 16px;
-            height: 16px;
-            border: 2px solid var(--border);
-            border-top-color: var(--accent);
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
         }
         
-        @keyframes spin {
-            to { transform: rotate(360deg); }
+        .context-menu-divider {
+            height: 1px;
+            background: var(--border);
+            margin: 4px 0;
+        }
+        
+        .encryption-panel {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        
+        .encryption-box {
+            background: var(--bg-panel);
+            border: 1px solid var(--accent);
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            max-width: 400px;
+            box-shadow: 0 0 40px rgba(0, 120, 212, 0.3);
+        }
+        
+        .encryption-box h3 {
+            color: var(--text-bright);
+            margin-bottom: 20px;
+        }
+        
+        .passcode-input {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin: 20px 0;
+        }
+        
+        .passcode-input input {
+            width: 50px;
+            height: 60px;
+            background: var(--bg-item);
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-bright);
+            font-size: 24px;
+            text-align: center;
+            font-family: monospace;
+        }
+        
+        .passcode-input input:focus {
+            border-color: var(--accent);
+            outline: none;
+        }
+        
+        @media (max-width: 900px) {
+            .sidebar { display: none; }
+            .file-list-header .col-type, .file-row .col-type,
+            .file-list-header .col-modified, .file-row .col-modified {
+                display: none;
+            }
         }
     </style>
 </head>
 <body>
-    <nav class="navbar">
-        <div class="container-fluid px-3">
-            <a class="navbar-brand" href="index.php">
-                <i class="bi bi-folder2-open"></i> UCA Files
-            </a>
-            <nav aria-label="breadcrumb">
-                <ol class="breadcrumb mb-0">
-                    <?php foreach ($breadcrumbs as $i => $crumb): ?>
-                        <?php if ($i > 0): ?><li class="breadcrumb-item"><?php else: ?><li class="breadcrumb-item active"><?php endif; ?>
-                            <a href="?dir=<?php echo urlencode($crumb['path']); ?>"><?php echo htmlspecialchars($crumb['name']); ?></a>
-                        </li>
-                    <?php endforeach; ?>
-                </ol>
-            </nav>
+    <?php if (isset($page_locked) && $page_locked): ?>
+    <div class="encryption-panel">
+        <div class="encryption-box">
+            <i class="bi bi-shield-lock" style="font-size: 3rem; color: var(--accent);"></i>
+            <h3>Page Locked</h3>
+            <p style="color: var(--text-muted);">Enter 6-digit passcode to unlock</p>
+            <form method="POST">
+                <div class="passcode-input">
+                    <input type="text" name="decrypt_passcode" id="decrypt1" maxlength="1" pattern="\d" inputmode="numeric" required autofocus>
+                    <input type="text" name="decrypt_passcode2" id="decrypt2" maxlength="1" pattern="\d" inputmode="numeric">
+                    <input type="text" name="decrypt_passcode3" id="decrypt3" maxlength="1" pattern="\d" inputmode="numeric">
+                    <input type="text" name="decrypt_passcode4" id="decrypt4" maxlength="1" pattern="\d" inputmode="numeric">
+                    <input type="text" name="decrypt_passcode5" id="decrypt5" maxlength="1" pattern="\d" inputmode="numeric">
+                    <input type="text" name="decrypt_passcode6" id="decrypt6" maxlength="1" pattern="\d" inputmode="numeric">
+                </div>
+                <button type="submit" name="decrypt_page" class="btn btn-uca" style="width: 100%;">
+                    <i class="bi bi-unlock"></i> Unlock
+                </button>
+            </form>
         </div>
-    </nav>
+    </div>
+    <script>
+        const inputs = ['decrypt1','decrypt2','decrypt3','decrypt4','decrypt5','decrypt6'];
+        inputs.forEach((id, i) => {
+            document.getElementById(id).addEventListener('input', (e) => {
+                if (e.target.value && i < 5) document.getElementById(inputs[i+1]).focus();
+            });
+            document.getElementById(id).addEventListener('keydown', (e) => {
+                if (e.key === 'Backspace' && !e.target.value && i > 0) document.getElementById(inputs[i-1]).focus();
+            });
+        });
+    </script>
+    <?php endif; ?>
 
-    <div class="container-fluid px-3 py-3">
-        <?php if ($upload_msg): ?>
-            <div class="alert alert-info alert-uca"><?php echo $upload_msg; ?></div>
-        <?php endif; ?>
-        
-        <?php if ($action_msg): ?>
-            <div class="alert alert-success alert-uca"><?php echo $action_msg; ?></div>
-        <?php endif; ?>
-
-        <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <span><i class="bi bi-cloud-upload"></i> Upload Files</span>
-                <span class="sort-link">
-                    Sort: 
-                    <a href="?dir=<?php echo urlencode($current_dir); ?>&sort=name&order=<?php echo $sort==='name'&&$order==='asc'?'desc':'asc'; ?>" class="<?php echo $sort==='name'?'active':''; ?>">Name</a> |
-                    <a href="?dir=<?php echo urlencode($current_dir); ?>&sort=size&order=<?php echo $sort==='size'&&$order==='asc'?'desc':'asc'; ?>" class="<?php echo $sort==='size'?'active':''; ?>">Size</a> |
-                    <a href="?dir=<?php echo urlencode($current_dir); ?>&sort=date&order=<?php echo $sort==='date'&&$order==='asc'?'desc':'asc'; ?>" class="<?php echo $sort==='date'?'active':''; ?>">Date</a> |
-                    <a href="?dir=<?php echo urlencode($current_dir); ?>&sort=type&order=<?php echo $sort==='type'&&$order==='asc'?'desc':'asc'; ?>" class="<?php echo $sort==='type'?'active':''; ?>">Type</a>
-                </span>
-            </div>
-            <div class="card-body">
-                <form method="POST" enctype="multipart/form-data" id="uploadForm">
-                    <div class="drop-zone" id="dropZone">
-                        <i class="bi bi-cloud-arrow-up"></i>
-                        <p>Drag & drop files here or click to browse</p>
-                        <input type="file" name="files[]" multiple id="fileInput" style="display:none">
-                    </div>
-                    <div id="fileList" class="mt-2"></div>
-                    <div class="progress-container" id="uploadProgress">
-                        <div class="progress" style="height:8px;">
-                            <div class="progress-bar" id="progressBar" style="width:0%"></div>
-                        </div>
-                        <small class="text-muted mt-1" id="progressText">Uploading...</small>
-                    </div>
-                    <button type="submit" name="upload" class="btn btn-uca mt-3" id="uploadBtn" style="display:none">
-                        <i class="bi bi-upload"></i> Upload
-                    </button>
-                </form>
-            </div>
+    <?php if ($edit_file && file_exists($current_dir . DIRECTORY_SEPARATOR . $edit_file)): ?>
+    <div class="editor-container active">
+        <div class="editor-toolbar">
+            <button class="toolbar-btn" onclick="closeEditor()">
+                <i class="bi bi-arrow-left"></i> Back
+            </button>
+            <span class="editor-filename"><i class="bi bi-file-earmark-code"></i> <?php echo htmlspecialchars($edit_file); ?></span>
+            <span class="editor-status" id="editorStatus">Modified</span>
+            <button class="btn-uca" style="margin-left: auto;" onclick="saveFile()">
+                <i class="bi bi-save"></i> Save
+            </button>
         </div>
+        <textarea class="editor-textarea" id="fileEditor" spellcheck="false"><?php echo htmlspecialchars(file_get_contents($current_dir . DIRECTORY_SEPARATOR . $edit_file)); ?></textarea>
+    </div>
+    <form method="POST" id="saveForm" style="display: none;">
+        <input type="hidden" name="save_file" value="1">
+        <input type="hidden" name="filename" value="<?php echo htmlspecialchars($edit_file); ?>">
+        <input type="hidden" name="content" id="saveContent">
+    </form>
+    <script>
+        function closeEditor() {
+            if (document.getElementById('fileEditor').dataset.modified === 'true') {
+                if (!confirm('Unsaved changes. Exit anyway?')) return;
+            }
+            window.location.href = '?dir=<?php echo urlencode($current_dir); ?>';
+        }
+        const editor = document.getElementById('fileEditor');
+        editor.dataset.modified = 'false';
+        editor.addEventListener('input', () => { editor.dataset.modified = 'true'; });
+        function saveFile() {
+            document.getElementById('saveContent').value = editor.value;
+            document.getElementById('saveForm').submit();
+        }
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                e.preventDefault();
+                saveFile();
+            }
+        });
+    </script>
+    <?php else: ?>
 
-        <div class="action-bar">
-            <button class="btn btn-outline-uca" data-bs-toggle="modal" data-bs-target="#newFolderModal">
+    <div class="explorer-container">
+        <div class="toolbar">
+            <button class="toolbar-btn" onclick="goParent()" title="Back">
+                <i class="bi bi-arrow-left"></i>
+            </button>
+            <button class="toolbar-btn" onclick="refreshPage()" title="Refresh">
+                <i class="bi bi-arrow-clockwise"></i>
+            </button>
+            <div class="toolbar-divider"></div>
+            <button class="toolbar-btn" data-bs-toggle="modal" data-bs-target="#uploadModal">
+                <i class="bi bi-cloud-upload"></i> Upload
+            </button>
+            <button class="toolbar-btn" data-bs-toggle="modal" data-bs-target="#newFolderModal">
                 <i class="bi bi-folder-plus"></i> New Folder
             </button>
-            <button class="btn btn-outline-uca" onclick="downloadSelected()">
-                <i class="bi bi-download"></i> Download
+            <button class="toolbar-btn" data-bs-toggle="modal" data-bs-target="#newFileModal">
+                <i class="bi bi-file-earmark-plus"></i> New File
             </button>
-            <button class="btn btn-outline-uca" onclick="zipSelected()">
-                <i class="bi bi-file-earmark-zip"></i> Zip Selected
-            </button>
-            <button class="btn btn-outline-uca" onclick="deleteSelected()" style="color: var(--accent-red);">
+            <div class="toolbar-divider"></div>
+            <button class="toolbar-btn" onclick="deleteSelected()">
                 <i class="bi bi-trash"></i> Delete
             </button>
-            <span class="selection-info" id="selectionInfo"></span>
+            <button class="toolbar-btn" onclick="zipSelected()">
+                <i class="bi bi-file-earmark-zip"></i> Zip
+            </button>
+            <div class="toolbar-divider"></div>
+            <button class="toolbar-btn" data-bs-toggle="modal" data-bs-target="#encryptModal" style="color: var(--accent);">
+                <i class="bi bi-shield-lock"></i> Encrypt
+            </button>
         </div>
 
-        <form method="POST" id="fileForm">
-            <div class="file-grid">
-                <?php foreach ($folders as $folder): ?>
+        <div class="address-bar">
+            <div class="breadcrumb">
+                <?php foreach ($breadcrumbs as $i => $crumb): ?>
+                    <?php if ($i > 0): ?><span class="breadcrumb-sep">›</span><?php endif; ?>
+                    <a class="breadcrumb-item <?php echo $i === count($breadcrumbs) - 1 ? 'current' : ''; ?>" 
+                       href="?dir=<?php echo urlencode($crumb['path']); ?>">
+                        <?php if ($i === 0): ?><i class="bi bi-hdd"></i><?php endif; ?>
+                        <?php echo htmlspecialchars($crumb['name']); ?>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+            <button class="toolbar-btn" onclick="refreshPage()">
+                <i class="bi bi-arrow-clockwise"></i>
+            </button>
+        </div>
+
+        <div class="main-content">
+            <div class="sidebar">
+                <div class="sidebar-section">
+                    <div class="sidebar-title">Favorites</div>
+                    <div class="sidebar-item" onclick="window.location.reload()">
+                        <i class="bi bi-house"></i> This PC
+                    </div>
+                    <div class="sidebar-item" onclick="goUp()">
+                        <i class="bi bi-arrow-up-circle"></i> Parent Folder
+                    </div>
+                </div>
+                <div class="sidebar-section">
+                    <div class="sidebar-title">Actions</div>
+                    <div class="sidebar-item" data-bs-toggle="modal" data-bs-target="#uploadModal">
+                        <i class="bi bi-cloud-upload"></i> Upload Files
+                    </div>
+                    <div class="sidebar-item" data-bs-toggle="modal" data-bs-target="#newFolderModal">
+                        <i class="bi bi-folder-plus"></i> New Folder
+                    </div>
+                    <div class="sidebar-item" data-bs-toggle="modal" data-bs-target="#newFileModal">
+                        <i class="bi bi-file-earmark-plus"></i> New File
+                    </div>
+                </div>
+                <div class="sidebar-section">
+                    <div class="sidebar-title">Tools</div>
+                    <div class="sidebar-item" data-bs-toggle="modal" data-bs-target="#encryptModal">
+                        <i class="bi bi-shield-lock"></i> Encrypt Page
+                    </div>
+                </div>
+            </div>
+
+            <div class="file-list-container">
+                <?php if ($upload_msg): ?>
+                    <div class="alert-uca"><?php echo $upload_msg; ?></div>
+                <?php endif; ?>
+                <?php if ($action_msg): ?>
+                    <div class="alert-uca"><?php echo $action_msg; ?></div>
+                <?php endif; ?>
+
+                <div class="file-list-header">
+                    <div class="col-name">Name</div>
+                    <div class="col-size">Size</div>
+                    <div class="col-type">Type</div>
+                    <div class="col-modified">Date Modified</div>
+                </div>
+
+                <form method="POST" id="fileForm" class="file-list">
+                    <?php if (!$is_root): ?>
+                    <div class="file-row" oncontextmenu="showContextMenu(event, '..', true)" onclick="goParent()">
+                        <div class="col-name">
+                            <span class="file-icon" style="color: var(--text-muted);"><i class="bi bi-arrow-up-left"></i></span>
+                            <span>..</span>
+                        </div>
+                        <div class="col-size">--</div>
+                        <div class="col-type">Folder</div>
+                        <div class="col-modified"></div>
+                    </div>
+                    <?php endif; ?>
+
+                    <?php foreach ($folders as $folder): ?>
                     <?php 
                     $folder_path = $current_dir . DIRECTORY_SEPARATOR . $folder;
-                    $is_parent = $folder === '..';
-                    $href = $is_parent ? '?dir=' . urlencode($parent_dir) : '?dir=' . urlencode($folder_path);
+                    $mod_time = filemtime($folder_path);
                     ?>
-                    <div class="file-item" onclick="if(event.target.type!=='checkbox')window.location='<?php echo $href; ?>'">
-                        <input type="checkbox" name="items[]" value="<?php echo htmlspecialchars($folder); ?>" onchange="updateSelection()">
-                        <span class="file-icon" style="color: #d29922;"><?php echo $folder === '..' ? '<i class="bi bi-arrow-return-left"></i>' : '<i class="bi bi-folder"></i>'; ?></span>
-                        <div class="file-name"><?php echo htmlspecialchars($folder); ?></div>
+                    <div class="file-row" oncontextmenu="showContextMenu(event, '<?php echo htmlspecialchars($folder); ?>', true)" onclick="navigateTo('<?php echo htmlspecialchars($folder); ?>')" ondblclick="navigateTo('<?php echo htmlspecialchars($folder); ?>')">
+                        <div class="col-name">
+                            <input type="checkbox" class="file-checkbox" name="items[]" value="<?php echo htmlspecialchars($folder); ?>" onclick="event.stopPropagation()">
+                            <span class="file-icon folder"><i class="bi bi-folder2"></i></span>
+                            <span><?php echo htmlspecialchars($folder); ?></span>
+                        </div>
+                        <div class="col-size">--</div>
+                        <div class="col-type">File folder</div>
+                        <div class="col-modified"><?php echo formatDate($mod_time); ?></div>
                     </div>
-                <?php endforeach; ?>
+                    <?php endforeach; ?>
 
-                <?php foreach ($files as $file): ?>
+                    <?php foreach ($files as $file): ?>
                     <?php 
                     $ext = pathinfo($file, PATHINFO_EXTENSION);
                     $size = filesize($current_dir . DIRECTORY_SEPARATOR . $file);
+                    $mod_time = filemtime($current_dir . DIRECTORY_SEPARATOR . $file);
                     $is_img = isImage($file);
-                    $is_vid = isVideo($file);
-                    $is_aud = isAudio($file);
-                    $is_zip = strtolower($ext) === 'zip';
+                    $is_edit = isEditable($file);
+                    $is_zip = isZip($file);
+                    
+                    $icon_class = 'doc';
+                    $icon = 'bi-file-earmark';
+                    if ($is_img) { $icon_class = 'image'; $icon = 'bi-image'; }
+                    elseif ($is_zip) { $icon_class = 'archive'; }
+                    elseif (in_array(strtolower($ext), ['html','htm','css','js','php','py','c','cpp','java','sql','json','xml','sh','bat','ps1','txt','md','ini','cfg','log','yaml','yml','htaccess'])) { $icon_class = 'code'; $icon = getFileIcon($ext); }
+                    
+                    $type_name = ucfirst($ext) . ' File';
+                    if (!$ext) $type_name = 'File';
                     ?>
-                    <div class="file-item" onclick="event.stopPropagation()">
-                        <input type="checkbox" name="items[]" value="<?php echo htmlspecialchars($file); ?>" onchange="updateSelection()">
-                        <?php if ($is_img): ?>
-                            <img src="?img=<?php echo urlencode($file); ?>&dir=<?php echo urlencode($current_dir); ?>" class="file-icon img-icon" onclick="viewFile('<?php echo htmlspecialchars($file); ?>')">
-                        <?php else: ?>
-                            <span class="file-icon" style="color: var(--accent);"><i class="bi <?php echo getFileIcon($ext); ?>"></i></span>
-                        <?php endif; ?>
-                        <div class="file-name"><?php echo htmlspecialchars($file); ?></div>
-                        <div class="file-size"><?php echo formatSize($size); ?></div>
-                        <?php if ($is_zip): ?>
-                            <button type="button" class="btn btn-sm btn-outline-uca mt-1" onclick="viewZip('<?php echo htmlspecialchars($file); ?>')">
-                                <i class="bi bi-eye"></i> View
-                            </button>
-                            <button type="submit" name="extract_zip" value="<?php echo htmlspecialchars($file); ?>" class="btn btn-sm btn-outline-uca mt-1">
-                                <i class="bi bi-file-earmark-zip"></i> Extract
-                            </button>
-                        <?php endif; ?>
-                        <a href="?download=<?php echo urlencode($file); ?>&dir=<?php echo urlencode($current_dir); ?>" class="btn btn-sm btn-outline-uca mt-1">
-                            <i class="bi bi-download"></i>
-                        </a>
+                    <div class="file-row" oncontextmenu="showContextMenu(event, '<?php echo htmlspecialchars($file); ?>', false)" onclick="event.stopPropagation()">
+                        <div class="col-name">
+                            <input type="checkbox" class="file-checkbox" name="items[]" value="<?php echo htmlspecialchars($file); ?>" onclick="event.stopPropagation()">
+                            <?php if ($is_img): ?>
+                                <img src="?img=<?php echo urlencode($file); ?>&dir=<?php echo urlencode($current_dir); ?>" style="width:20px;height:20px;object-fit:cover;border-radius:2px;">
+                            <?php else: ?>
+                                <span class="file-icon <?php echo $icon_class; ?>"><i class="bi <?php echo $icon; ?>"></i></span>
+                            <?php endif; ?>
+                            <span ondblclick="doubleClick('<?php echo htmlspecialchars($file); ?>')"><?php echo htmlspecialchars($file); ?></span>
+                        </div>
+                        <div class="col-size"><?php echo formatSize($size); ?></div>
+                        <div class="col-type"><?php echo $type_name; ?></div>
+                        <div class="col-modified"><?php echo formatDate($mod_time); ?></div>
                     </div>
-                <?php endforeach; ?>
-            </div>
-        </form>
+                    <?php endforeach; ?>
+                </form>
 
-        <?php if (empty($folders) && empty($files)): ?>
-            <div class="text-center py-5 text-muted">
-                <i class="bi bi-folder2" style="font-size: 4rem;"></i>
-                <p class="mt-3">This folder is empty</p>
+                <?php if (empty($folders) && empty($files)): ?>
+                    <div style="padding: 40px; text-align: center; color: var(--text-muted);">
+                        <i class="bi bi-folder2" style="font-size: 3rem;"></i>
+                        <p>This folder is empty</p>
+                    </div>
+                <?php endif; ?>
             </div>
-        <?php endif; ?>
+        </div>
+
+        <div class="status-bar">
+            <span id="selectionStatus">0 items selected</span>
+            <span><?php echo count($folders) . ' folders, ' . count($files) . ' files'; ?></span>
+        </div>
+    </div>
+
+    <!-- Context Menu -->
+    <div class="context-menu" id="contextMenu">
+        <div class="context-menu-item" onclick="contextOpen()">
+            <i class="bi bi-folder2-open"></i> Open
+        </div>
+        <div class="context-menu-item" onclick="contextEdit()">
+            <i class="bi bi-pencil"></i> Edit
+        </div>
+        <div class="context-menu-item" onclick="contextRename()">
+            <i class="bi bi-pencil-square"></i> Rename
+        </div>
+        <div class="context-menu-item" onclick="contextDownload()">
+            <i class="bi bi-download"></i> Download
+        </div>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item" onclick="contextZip()" id="ctxZipItem">
+            <i class="bi bi-file-earmark-zip"></i> Compress
+        </div>
+        <div class="context-menu-item" onclick="contextExtract()" id="ctxExtractItem" style="display:none;">
+            <i class="bi bi-file-earmark-zip"></i> Extract Here
+        </div>
+        <div class="context-menu-item" onclick="contextViewZip()" id="ctxViewZipItem" style="display:none;">
+            <i class="bi bi-eye"></i> View Contents
+        </div>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item" onclick="contextDelete()" style="color: #f85149;">
+            <i class="bi bi-trash"></i> Delete
+        </div>
+    </div>
+
+    <!-- Upload Modal -->
+    <div class="modal fade" id="uploadModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-cloud-upload"></i> Upload Files</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST" enctype="multipart/form-data" id="uploadForm">
+                    <div class="modal-body">
+                        <div class="drop-zone" id="dropZone">
+                            <i class="bi bi-cloud-arrow-up"></i>
+                            <p>Drag & drop files here or click to browse</p>
+                            <input type="file" name="files[]" multiple id="fileInput" style="display:none">
+                        </div>
+                        <div id="fileList" class="mt-2"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="submit" name="upload" class="btn-uca">Upload</button>
+                    </div>
+                </form>
+            </div>
+        </div>
     </div>
 
     <!-- New Folder Modal -->
@@ -695,36 +1108,138 @@ foreach ($path_parts as $part) {
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title"><i class="bi bi-folder-plus"></i> Create New Folder</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 class="modal-title"><i class="bi bi-folder-plus"></i> New Folder</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <form method="POST">
                     <div class="modal-body">
                         <input type="text" name="folder_name" class="form-control" placeholder="Folder name" required pattern="[\w\-\s]+" title="Letters, numbers, hyphens and underscores only">
                     </div>
                     <div class="modal-footer">
-                        <button type="submit" name="create_folder" class="btn btn-uca">Create</button>
+                        <button type="submit" name="create_folder" class="btn-uca">Create</button>
                     </div>
                 </form>
             </div>
         </div>
     </div>
 
-    <!-- Create Zip Modal -->
-    <div class="modal fade" id="createZipModal" tabindex="-1">
+    <!-- New File Modal -->
+    <div class="modal fade" id="newFileModal" tabindex="-1">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title"><i class="bi bi-file-earmark-zip"></i> Create Zip Archive</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 class="modal-title"><i class="bi bi-file-earmark-plus"></i> Create New File</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <form method="POST">
                     <div class="modal-body">
-                        <input type="text" name="folder_zip_name" class="form-control" placeholder="Folder name to zip" required>
-                        <small class="text-muted">Enter the exact folder name to create a zip archive</small>
+                        <div class="mb-3">
+                            <label class="form-label">File Name</label>
+                            <input type="text" name="file_name" class="form-control" placeholder="myfile" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">File Type</label>
+                            <select name="file_type" class="form-select">
+                                <option value="txt">Text (.txt)</option>
+                                <option value="html">HTML (.html)</option>
+                                <option value="php">PHP (.php)</option>
+                                <option value="css">CSS (.css)</option>
+                                <option value="js">JavaScript (.js)</option>
+                                <option value="json">JSON (.json)</option>
+                                <option value="xml">XML (.xml)</option>
+                                <option value="md">Markdown (.md)</option>
+                                <option value="py">Python (.py)</option>
+                                <option value="sql">SQL (.sql)</option>
+                                <option value="yaml">YAML (.yaml)</option>
+                                <option value="ini">Config (.ini)</option>
+                                <option value="log">Log (.log)</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="submit" name="create_single_zip" class="btn btn-uca">Create Zip</button>
+                        <button type="submit" name="create_new_file" class="btn-uca">Create</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Encrypt Modal -->
+    <div class="modal fade" id="encryptModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-shield-lock"></i> Encrypt/Decrypt Page</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <p style="color: var(--text-muted);">Enter a 6-digit passcode to encrypt or decrypt this page.</p>
+                        <div class="passcode-input" style="justify-content: center; margin: 20px 0;">
+                            <input type="text" name="passcode1" id="enc1" maxlength="1" pattern="\d" inputmode="numeric" required>
+                            <input type="text" name="passcode2" id="enc2" maxlength="1" pattern="\d" inputmode="numeric">
+                            <input type="text" name="passcode3" id="enc3" maxlength="1" pattern="\d" inputmode="numeric">
+                            <input type="text" name="passcode4" id="enc4" maxlength="1" pattern="\d" inputmode="numeric">
+                            <input type="text" name="passcode5" id="enc5" maxlength="1" pattern="\d" inputmode="numeric">
+                            <input type="text" name="passcode6" id="enc6" maxlength="1" pattern="\d" inputmode="numeric">
+                            <input type="hidden" name="passcode" id="fullPasscode">
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="submit" name="encrypt_page" class="btn-uca flex-fill" onclick="combinePasscode()">
+                                <i class="bi bi-lock"></i> Encrypt
+                            </button>
+                            <button type="submit" name="decrypt_page" class="btn-uca flex-fill" onclick="combinePasscode()">
+                                <i class="bi bi-unlock"></i> Decrypt
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Extract Zip Modal -->
+    <div class="modal fade" id="extractZipModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-file-earmark-zip"></i> Extract Archive</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <input type="hidden" name="zip_file" id="extractZipFile">
+                        <div class="mb-3">
+                            <label class="form-label">Extract to folder (optional)</label>
+                            <input type="text" name="extract_folder" class="form-control" placeholder="Leave empty for current folder">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="submit" name="extract_zip" class="btn-uca">Extract</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rename Modal -->
+    <div class="modal fade" id="renameModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-pencil-square"></i> Rename</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <input type="hidden" name="old_name" id="renameOldName">
+                        <div class="mb-3">
+                            <label class="form-label">New Name</label>
+                            <input type="text" name="new_name" class="form-control" id="renameNewName" required>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="submit" name="rename_item" class="btn-uca">Rename</button>
                     </div>
                 </form>
             </div>
@@ -736,14 +1251,14 @@ foreach ($path_parts as $part) {
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title"><i class="bi bi-file-earmark-zip"></i> Zip Contents</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <h5 class="modal-title"><i class="bi bi-file-earmark-zip"></i> Archive Contents</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <div class="zip-content" id="zipContent"></div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-outline-uca" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn-outline-uca" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
@@ -753,79 +1268,189 @@ foreach ($path_parts as $part) {
     <div class="modal fade" id="imageModal" tabindex="-1">
         <div class="modal-dialog modal-xl">
             <div class="modal-content" style="background:transparent;border:none;">
-                <div class="modal-body text-center p-0">
+                <div class="modal-body p-0 text-center">
                     <img id="viewerImage" src="" style="max-width:100%;max-height:90vh;">
                 </div>
             </div>
         </div>
     </div>
 
+    <?php endif; ?>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        const dropZone = document.getElementById('dropZone');
-        const fileInput = document.getElementById('fileInput');
-        const uploadBtn = document.getElementById('uploadBtn');
-        const fileList = document.getElementById('fileList');
-        const uploadForm = document.getElementById('uploadForm');
+        let contextItem = null;
+        let contextIsFolder = false;
         
-        dropZone.addEventListener('click', () => fileInput.click());
-        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
-        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-        dropZone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            dropZone.classList.remove('dragover');
-            fileInput.files = e.dataTransfer.files;
-            updateFileList();
-        });
+        function navigateTo(folder) {
+            window.location.href = '?dir=<?php echo urlencode($current_dir); ?>/' + encodeURIComponent(folder);
+        }
         
-        fileInput.addEventListener('change', updateFileList);
+        function goParent() {
+            window.location.href = '?dir=<?php echo urlencode($parent_dir); ?>';
+        }
         
-        function updateFileList() {
-            const files = fileInput.files;
-            if (files.length > 0) {
-                uploadBtn.style.display = 'inline-block';
-                let html = '<div class="d-flex flex-wrap gap-2">';
-                for (let i = 0; i < files.length; i++) {
-                    html += `<span class="badge bg-secondary">${files[i].name}</span>`;
-                }
-                html += '</div>';
-                fileList.innerHTML = html;
+        function goUp() {
+            window.location.href = '?dir=<?php echo urlencode($parent_dir); ?>';
+        }
+        
+        function refreshPage() {
+            window.location.reload();
+        }
+        
+        function doubleClick(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            const editable = ['txt','md','json','xml','html','htm','css','js','php','py','c','cpp','java','sql','sh','bat','ps1','ini','cfg','conf','log','htaccess','yaml','yml'];
+            const images = ['jpg','jpeg','png','gif','webp','svg','bmp'];
+            const zips = ['zip','rar','7z','tar','gz'];
+            
+            if (editable.includes(ext)) {
+                window.location.href = '?dir=<?php echo urlencode($current_dir); ?>&edit=' + encodeURIComponent(filename);
+            } else if (images.includes(ext)) {
+                document.getElementById('viewerImage').src = '?img=' + encodeURIComponent(filename) + '&dir=<?php echo urlencode($current_dir); ?>';
+                new bootstrap.Modal(document.getElementById('imageModal')).show();
+            } else if (zips.includes(ext)) {
+                showExtractModal(filename);
             } else {
-                uploadBtn.style.display = 'none';
-                fileList.innerHTML = '';
+                window.location.href = '?download=' + encodeURIComponent(filename) + '&dir=<?php echo urlencode($current_dir); ?>';
             }
         }
         
-        uploadForm.addEventListener('submit', function() {
-            const progress = document.getElementById('uploadProgress');
-            const bar = document.getElementById('progressBar');
-            const text = document.getElementById('progressText');
+        // Context Menu
+        function showContextMenu(e, item, isFolder) {
+            e.preventDefault();
+            contextItem = item;
+            contextIsFolder = isFolder;
             
-            progress.classList.add('active');
+            const menu = document.getElementById('contextMenu');
+            menu.style.display = 'block';
+            menu.style.left = e.pageX + 'px';
+            menu.style.top = e.pageY + 'px';
             
-            let pct = 0;
-            const interval = setInterval(() => {
-                pct += Math.random() * 20;
-                if (pct > 90) pct = 90;
-                bar.style.width = pct + '%';
-                text.textContent = `Uploading... ${Math.round(pct)}%`;
-            }, 200);
+            // Show/hide zip options
+            const ext = item.split('.').pop().toLowerCase();
+            const isZip = ['zip','rar','7z','tar','gz'].includes(ext);
             
-            window.onload = function() {
-                clearInterval(interval);
-                bar.style.width = '100%';
-                text.textContent = 'Complete!';
-            };
+            document.getElementById('ctxZipItem').style.display = isZip ? 'none' : 'block';
+            document.getElementById('ctxExtractItem').style.display = isZip ? 'block' : 'none';
+            document.getElementById('ctxViewZipItem').style.display = isZip ? 'block' : 'none';
+            
+            // Adjust for folder
+            if (isFolder) {
+                document.getElementById('ctxExtractItem').style.display = 'none';
+                document.getElementById('ctxViewZipItem').style.display = 'none';
+            }
+            
+            document.addEventListener('click', hideContextMenu);
+        }
+        
+        function hideContextMenu() {
+            document.getElementById('contextMenu').style.display = 'none';
+            document.removeEventListener('click', hideContextMenu);
+        }
+        
+        function contextOpen() {
+            if (contextIsFolder) {
+                navigateTo(contextItem);
+            } else {
+                doubleClick(contextItem);
+            }
+            hideContextMenu();
+        }
+        
+        function contextEdit() {
+            if (!contextIsFolder) {
+                window.location.href = '?dir=<?php echo urlencode($current_dir); ?>&edit=' + encodeURIComponent(contextItem);
+            }
+            hideContextMenu();
+        }
+        
+        function contextRename() {
+            document.getElementById('renameOldName').value = contextItem;
+            document.getElementById('renameNewName').value = contextItem;
+            new bootstrap.Modal(document.getElementById('renameModal')).show();
+            hideContextMenu();
+        }
+        
+        function contextDownload() {
+            if (!contextIsFolder) {
+                window.location.href = '?download=' + encodeURIComponent(contextItem) + '&dir=<?php echo urlencode($current_dir); ?>';
+            }
+            hideContextMenu();
+        }
+        
+        function contextZip() {
+            const form = document.getElementById('fileForm');
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'items[]';
+            input.value = contextItem;
+            form.appendChild(input);
+            
+            const zipInput = document.createElement('input');
+            zipInput.type = 'hidden';
+            zipInput.name = 'create_zip';
+            zipInput.value = '1';
+            form.appendChild(zipInput);
+            
+            form.submit();
+            hideContextMenu();
+        }
+        
+        function contextExtract() {
+            showExtractModal(contextItem);
+            hideContextMenu();
+        }
+        
+        function contextViewZip() {
+            const modal = new bootstrap.Modal(document.getElementById('zipContentModal'));
+            document.getElementById('zipContent').innerHTML = '<div class="text-center py-3">Loading...</div>';
+            modal.show();
+            
+            const formData = new FormData();
+            formData.append('listzip', contextItem);
+            
+            fetch('', { method: 'POST', body: formData })
+                .then(r => r.text())
+                .then(html => {
+                    const match = html.match(/<div class="zip-content">([\s\S]*?)<\/div>\s*<div class="modal-footer">/);
+                    document.getElementById('zipContent').innerHTML = match ? match[1] : 'Failed to load';
+                });
+            hideContextMenu();
+        }
+        
+        function contextDelete() {
+            if (confirm('Delete "' + contextItem + '"?')) {
+                const form = document.getElementById('fileForm');
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = 'items[]';
+                input.value = contextItem;
+                form.appendChild(input);
+                
+                const delInput = document.createElement('input');
+                delInput.type = 'hidden';
+                delInput.name = 'delete_items';
+                delInput.value = '1';
+                form.appendChild(delInput);
+                
+                form.submit();
+            }
+            hideContextMenu();
+        }
+        
+        function showExtractModal(filename) {
+            document.getElementById('extractZipFile').value = filename;
+            new bootstrap.Modal(document.getElementById('extractZipModal')).show();
+        }
+        
+        document.querySelectorAll('.file-checkbox').forEach(cb => {
+            cb.addEventListener('change', updateSelection);
         });
         
         function updateSelection() {
             const checkboxes = document.querySelectorAll('input[name="items[]"]:checked');
-            const info = document.getElementById('selectionInfo');
-            if (checkboxes.length > 0) {
-                info.textContent = checkboxes.length + ' item(s) selected';
-            } else {
-                info.textContent = '';
-            }
+            document.getElementById('selectionStatus').textContent = checkboxes.length + ' items selected';
         }
         
         function deleteSelected() {
@@ -845,24 +1470,6 @@ foreach ($path_parts as $part) {
             }
         }
         
-        function downloadSelected() {
-            const checkboxes = document.querySelectorAll('input[name="items[]"]:checked');
-            if (checkboxes.length === 0) {
-                alert('Select items to download');
-                return;
-            }
-            
-            const form = document.getElementById('fileForm');
-            const input = document.createElement('input');
-            input.type = 'hidden';
-            input.name = 'create_zip';
-            input.value = '1';
-            form.appendChild(input);
-            form.action = '?dir=<?php echo urlencode($current_dir); ?>&download=1';
-            form.submit();
-            setTimeout(() => form.action = '', 100);
-        }
-        
         function zipSelected() {
             const checkboxes = document.querySelectorAll('input[name="items[]"]:checked');
             if (checkboxes.length === 0) {
@@ -878,39 +1485,77 @@ foreach ($path_parts as $part) {
             form.submit();
         }
         
-        function viewZip(filename) {
-            const modal = new bootstrap.Modal(document.getElementById('zipContentModal'));
-            const content = document.getElementById('zipContent');
-            content.innerHTML = '<div class="text-center py-3"><span class="loading-spinner"></span> Loading...</div>';
-            modal.show();
-            
-            const formData = new FormData();
-            formData.append('listzip', filename);
-            
-            fetch('', { method: 'POST', body: formData })
-                .then(r => r.text())
-                .then(html => {
-                    const match = html.match(/<div class="zip-content">([\s\S]*?)<\/div>\s*<div class="modal-footer">/);
-                    content.innerHTML = match ? match[1] : 'Failed to load contents';
-                });
+        // Upload handlers
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        
+        if (dropZone && fileInput) {
+            dropZone.addEventListener('click', () => fileInput.click());
+            dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+            dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('dragover');
+                fileInput.files = e.dataTransfer.files;
+                updateFileList();
+            });
+            fileInput.addEventListener('change', updateFileList);
         }
         
-        function viewFile(filename) {
-            const ext = filename.split('.').pop().toLowerCase();
-            if (['jpg','jpeg','png','gif','webp','svg'].includes(ext)) {
-                document.getElementById('viewerImage').src = '?img=' + encodeURIComponent(filename) + '&dir=<?php echo urlencode($current_dir); ?>';
-                new bootstrap.Modal(document.getElementById('imageModal')).show();
+        function updateFileList() {
+            if (!fileInput) return;
+            const files = fileInput.files;
+            const fileList = document.getElementById('fileList');
+            if (files.length > 0) {
+                let html = '<div class="d-flex flex-wrap gap-2">';
+                for (let i = 0; i < files.length; i++) {
+                    html += '<span class="badge bg-secondary">' + files[i].name + '</span>';
+                }
+                html += '</div>';
+                fileList.innerHTML = html;
             }
         }
+        
+        // Encrypt passcode handlers
+        const encInputs = ['enc1','enc2','enc3','enc4','enc5','enc6'];
+        encInputs.forEach((id, i) => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('input', (e) => {
+                    if (e.target.value && i < 5) document.getElementById(encInputs[i+1]).focus();
+                });
+                el.addEventListener('keydown', (e) => {
+                    if (e.key === 'Backspace' && !e.target.value && i > 0) document.getElementById(encInputs[i-1]).focus();
+                });
+            }
+        });
+        
+        function combinePasscode() {
+            let code = '';
+            encInputs.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) code += el.value;
+            });
+            document.getElementById('fullPasscode').value = code;
+        }
+        
+        // Prevent context menu on file list
+        document.getElementById('fileForm').addEventListener('contextmenu', (e) => {
+            if (e.target.closest('.file-row')) {
+                // Allow custom context menu
+            }
+        });
     </script>
     
     <?php
     if (isset($_GET['img'])) {
         $img = $_GET['img'];
         $dir = isset($_GET['dir']) ? $_GET['dir'] : '.';
-        $path = $dir . DIRECTORY_SEPARATOR . $img;
-        if (file_exists($path) && is_file($path)) {
-            header('Content-Type: ' . getMimeType($path));
+        $path = realpath($dir . DIRECTORY_SEPARATOR . $img);
+        if ($path && is_file($path)) {
+            $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+            $types = ['jpg'=>'image/jpeg','jpeg'=>'image/jpeg','png'=>'image/png','gif'=>'image/gif','webp'=>'image/webp','svg'=>'image/svg+xml','bmp'=>'image/bmp'];
+            header('Content-Type: ' . ($types[$ext] ?? 'application/octet-stream'));
             readfile($path);
             exit;
         }
@@ -921,13 +1566,14 @@ foreach ($path_parts as $part) {
         if (file_exists($zip_file)) {
             $zip = new ZipArchive();
             if ($zip->open($zip_file) === TRUE) {
-                echo '<div class="zip-content">';
+                echo '<div class="zip-content" style="max-height:400px;overflow-y:auto;background:#1e1e1e;padding:10px;border-radius:4px;font-size:12px;">';
                 for ($i = 0; $i < $zip->numFiles; $i++) {
                     $name = $zip->getNameIndex($i);
                     $is_dir = substr($name, -1) === '/';
-                    echo '<div class="zip-item ' . ($is_dir ? 'zip-folder' : 'zip-file') . '">';
-                    echo '<i class="bi ' . ($is_dir ? 'bi-folder' : 'bi-file-earmark') . '"></i> ';
-                    echo htmlspecialchars($name);
+                    $size = $zip->getStatIndex($i)['size'];
+                    echo '<div style="padding:6px 10px;border-bottom:1px solid #3e3e42;' . ($is_dir ? 'color:#dcb67a;' : '') . 'display:flex;justify-content:space-between;">';
+                    echo '<span><i class="bi ' . ($is_dir ? 'bi-folder2' : 'bi-file-earmark') . '"></i> ' . htmlspecialchars($name) . '</span>';
+                    echo '<span style="color:#858585;">' . ($is_dir ? '--' : formatSize($size)) . '</span>';
                     echo '</div>';
                 }
                 echo '</div>';
