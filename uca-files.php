@@ -13,17 +13,25 @@ if (file_exists($lock_file)) {
 }
 
 if (isset($_POST['encrypt_page'])) {
-    $passcode = $_POST['passcode'] ?? '';
+    $passcode = '';
+    for ($i = 1; $i <= 6; $i++) {
+        $passcode .= $_POST['passcode' . $i] ?? '';
+    }
     if (preg_match('/^\d{6}$/', $passcode)) {
         $encrypted = openssl_encrypt('LOCKED', 'aes-256-cbc', $encryption_key);
         file_put_contents($lock_file, $encrypted);
         $page_locked = true;
         $action_msg = "Page encrypted!";
+    } else {
+        $action_msg = "Please enter a 6-digit passcode!";
     }
 }
 
 if (isset($_POST['decrypt_page'])) {
-    $passcode = $_POST['passcode'] ?? '';
+    $passcode = '';
+    for ($i = 1; $i <= 6; $i++) {
+        $passcode .= $_POST['decrypt_passcode' . $i] ?? '';
+    }
     if (preg_match('/^\d{6}$/', $passcode)) {
         if (file_exists($lock_file)) {
             $locked_content = file_get_contents($lock_file);
@@ -32,8 +40,12 @@ if (isset($_POST['decrypt_page'])) {
                 unlink($lock_file);
                 $page_locked = false;
                 $action_msg = "Page decrypted!";
+            } else {
+                $action_msg = "Incorrect passcode!";
             }
         }
+    } else {
+        $action_msg = "Please enter a 6-digit passcode!";
     }
 }
 
@@ -309,14 +321,27 @@ if (isset($_POST['create_share'])) {
         $shares[$share_id] = [
             'path' => $share_path,
             'name' => $item_name,
-            'created' => time()
+            'created' => time(),
+            'is_folder' => is_dir($share_path)
         ];
         
         file_put_contents($shares_file, json_encode($shares));
-        $share_url = (isset($_SERVER['HTTPS']) ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . dirname($_SERVER['REQUEST_URI']) . '/?share=' . $share_id;
-        $action_msg = "Share link created for '$item_name'! Link copied to clipboard.";
         
-        echo '<script>navigator.clipboard.writeText("' . $share_url . '");</script>';
+        // Build share URL properly based on current script
+        $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
+        $host = $_SERVER['HTTP_HOST'];
+        $script_name = basename($_SERVER['SCRIPT_NAME']);
+        
+        $share_url = $protocol . '://' . $host . str_replace(basename($_SERVER['REQUEST_URI']), '', $_SERVER['REQUEST_URI']) . $script_name . '?share=' . $share_id;
+        
+        // Store in session to display after redirect
+        $_SESSION['last_share_info'] = [
+            'name' => $item_name,
+            'url' => $share_url
+        ];
+        
+        header('Location: ?dir=' . urlencode($current_dir) . '&share_created=1');
+        exit;
     }
 }
 
@@ -350,7 +375,7 @@ if (isset($_POST['protect_item_submit'])) {
             $key = 'UCA_FILE_PROTECT_' . md5($password . $item_name);
             
             if (is_dir($item_path)) {
-                $content = delTreeGetContent($item_path);
+                $content = json_encode(delTreeGetContent($item_path));
                 $encrypted = openssl_encrypt($content, 'aes-256-cbc', $key);
                 $protected_content = json_encode(['type'=>'folder','data'=>base64_encode($encrypted),'name'=>$item_name]);
             } else {
@@ -366,6 +391,8 @@ if (isset($_POST['protect_item_submit'])) {
                 unlink($item_path);
             }
             $action_msg = "Password protection applied to '$item_name'";
+        } else {
+            $action_msg = "Item not found!";
         }
     }
 }
@@ -1126,6 +1153,9 @@ foreach ($path_parts as $part) {
                 <i class="bi bi-file-earmark-arrow-down"></i> Unzip
             </button>
             <div class="toolbar-divider"></div>
+            <button class="toolbar-btn" data-bs-toggle="modal" data-bs-target="#settingsModal">
+                <i class="bi bi-gear"></i> Settings
+            </button>
             <button class="toolbar-btn" data-bs-toggle="modal" data-bs-target="#encryptModal" style="color: var(--accent);">
                 <i class="bi bi-shield-lock"></i> Encrypt
             </button>
@@ -1183,7 +1213,15 @@ foreach ($path_parts as $part) {
                     <div class="alert-uca"><?php echo $upload_msg; ?></div>
                 <?php endif; ?>
                 <?php if ($action_msg): ?>
-                    <div class="alert-uca"><?php echo $action_msg; ?></div>
+                    <div class="alert-uca" id="actionMsg"><?php echo $action_msg; ?></div>
+                <?php endif; ?>
+                
+                <?php if (isset($_GET['share_created']) && isset($_SESSION['last_share_info'])): ?>
+                <script>
+                    document.getElementById('shareResultName').value = <?php echo json_encode($_SESSION['last_share_info']['name']); ?>;
+                    document.getElementById('shareResultUrl').value = <?php echo json_encode($_SESSION['last_share_info']['url']); ?>;
+                    new bootstrap.Modal(document.getElementById('shareResultModal')).show();
+                </script>
                 <?php endif; ?>
 
                 <div class="file-list-header">
@@ -1665,6 +1703,174 @@ foreach ($path_parts as $part) {
         </div>
     </div>
 
+    <!-- Share Link Result Modal -->
+    <div class="modal fade" id="shareResultModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-check-circle" style="color: #4ec9b0;"></i> Share Link Created!</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p style="color: var(--text-muted);">Share link created successfully:</p>
+                    <div class="mb-3">
+                        <label class="form-label">Item:</label>
+                        <input type="text" class="form-control" id="shareResultName" readonly>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Share Link:</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="shareResultUrl" readonly>
+                            <button class="btn btn-outline-uca" type="button" onclick="copyShareLink()">
+                                <i class="bi bi-clipboard"></i> Copy
+                            </button>
+                        </div>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 12px;">
+                        <i class="bi bi-info-circle"></i> Anyone with this link can access and download this file/folder.
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-uca" data-bs-dismiss="modal">Done</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal fade" id="settingsModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-gear"></i> Settings</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-4">
+                        <h6 style="color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 12px;">
+                            <i class="bi bi-shield-lock"></i> Page Encryption
+                        </h6>
+                        <div class="mb-2">
+                            <button class="btn btn-outline-uca w-100 mb-2" data-bs-toggle="modal" data-bs-target="#encryptModal" data-bs-dismiss="modal">
+                                <i class="bi bi-lock"></i> Encrypt/Decrypt Page
+                            </button>
+                            <small style="color: var(--text-muted);">Lock the entire file manager with a 6-digit passcode</small>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h6 style="color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 12px;">
+                            <i class="bi bi-folder-lock"></i> File/Folder Protection
+                        </h6>
+                        <p style="color: var(--text-muted); font-size: 13px;">
+                            To protect files or folders with password, right-click on them and select "Password Protect".
+                            The original file/folder will be encrypted and can only be accessed with the correct password.
+                        </p>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h6 style="color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 12px;">
+                            <i class="bi bi-link-45deg"></i> Share Links
+                        </h6>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="shareEnabled" checked>
+                            <label class="form-check-label" for="shareEnabled">
+                                Enable share link creation
+                            </label>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="shareDownloads" checked>
+                            <label class="form-check-label" for="shareDownloads">
+                                Allow downloads via share links
+                            </label>
+                        </div>
+                        <small style="color: var(--text-muted);">Share links allow anyone to download files without password.</small>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h6 style="color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 12px;">
+                            <i class="bi bi-folder-zip"></i> Archive Options
+                        </h6>
+                        <div class="mb-2">
+                            <label class="form-label">Default compression level</label>
+                            <select class="form-select">
+                                <option value="1">Fastest</option>
+                                <option value="5" selected>Normal</option>
+                                <option value="9">Best</option>
+                            </select>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="showZipProgress" checked>
+                            <label class="form-check-label" for="showZipProgress">
+                                Show progress bar when creating archives
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h6 style="color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 12px;">
+                            <i class="bi bi-palette"></i> Display Options
+                        </h6>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="showHidden" checked>
+                            <label class="form-check-label" for="showHidden">
+                                Show hidden files
+                            </label>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="showSize" checked>
+                            <label class="form-check-label" for="showSize">
+                                Show file sizes
+                            </label>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="showDate" checked>
+                            <label class="form-check-label" for="showDate">
+                                Show modification dates
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h6 style="color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 12px;">
+                            <i class="bi bi-upload"></i> Upload Options
+                        </h6>
+                        <div class="mb-2">
+                            <label class="form-label">Max upload size</label>
+                            <select class="form-select">
+                                <option value="2097152">2 MB</option>
+                                <option value="5242880">5 MB</option>
+                                <option value="10485760" selected>10 MB</option>
+                                <option value="52428800">50 MB</option>
+                                <option value="104857600">100 MB</option>
+                            </select>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="allowOverwrite" checked>
+                            <label class="form-check-label" for="allowOverwrite">
+                                Allow overwriting existing files
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h6 style="color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 12px;">
+                            <i class="bi bi-info-circle"></i> About
+                        </h6>
+                        <p style="color: var(--text-muted);">
+                            <strong>UCA Files</strong> v1.0.0<br>
+                            Web File Manager with Unzipper Capabilities<br><br>
+                            <small>Built with Bootstrap 5 and PHP</small>
+                        </p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-outline-uca" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <?php endif; ?>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
@@ -2000,6 +2206,13 @@ foreach ($path_parts as $part) {
                 new bootstrap.Modal(document.getElementById('shareModal')).show();
             }
             hideContextMenu();
+        }
+        
+        function copyShareLink() {
+            const urlInput = document.getElementById('shareResultUrl');
+            urlInput.select();
+            document.execCommand('copy');
+            alert('Link copied to clipboard!');
         }
         
         function showExtractModal(filename) {
