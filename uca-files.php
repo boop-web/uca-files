@@ -416,19 +416,20 @@ if (isset($_POST['unprotect_item_submit'])) {
     $password = $_POST['unprotect_password'];
     
     $protected_path = $current_dir . DIRECTORY_SEPARATOR . $item_name . '.uca_protected';
+    $original_path = $current_dir . DIRECTORY_SEPARATOR . $item_name;
+    
     if (file_exists($protected_path)) {
         $key = 'UCA_FILE_PROTECT_' . md5($password . $item_name);
         $protected_content = file_get_contents($protected_path);
         $decoded = json_decode($protected_content, true);
         
         if ($decoded && isset($decoded['data'])) {
-            $decrypted = openssl_decrypt(base64_decode($decoded['data']), 'aes-256-cbc', $key);
-            
-            if ($decrypted !== false && $decrypted !== '') {
-                $original_path = $current_dir . DIRECTORY_SEPARATOR . $item_name;
-                
-                if ($decoded['type'] === 'folder') {
-                    // Extract zip content
+            // Get encrypted content from original file (files) or from the data (folders)
+            if ($decoded['type'] === 'folder') {
+                // For folders, decrypt the zip content from metadata
+                $decrypted = openssl_decrypt(base64_decode($decoded['data']), 'aes-256-cbc', $key);
+                if ($decrypted !== false && $decrypted !== '') {
+                    // Extract the decrypted zip
                     $temp_zip = tempnam(sys_get_temp_dir(), 'uca') . '.zip';
                     file_put_contents($temp_zip, $decrypted);
                     $zip = new ZipArchive();
@@ -437,16 +438,34 @@ if (isset($_POST['unprotect_item_submit'])) {
                         $zip->close();
                     }
                     unlink($temp_zip);
+                    
+                    unlink($protected_path);
+                    $action_msg = "Protection removed from '$item_name'";
                 } else {
-                    file_put_contents($original_path, $decrypted);
+                    $action_msg = "Incorrect password!";
                 }
-                
-                unlink($protected_path);
-                $action_msg = "Protection removed from '$item_name'";
             } else {
-                $action_msg = "Incorrect password!";
+                // For files, read encrypted content from original file and decrypt
+                if (file_exists($original_path)) {
+                    $encrypted_content = file_get_contents($original_path);
+                    $decrypted = openssl_decrypt($encrypted_content, 'aes-256-cbc', $key);
+                    
+                    if ($decrypted !== false && $decrypted !== '') {
+                        file_put_contents($original_path, $decrypted);
+                        unlink($protected_path);
+                        $action_msg = "Protection removed from '$item_name'";
+                    } else {
+                        $action_msg = "Incorrect password!";
+                    }
+                } else {
+                    $action_msg = "Original file not found!";
+                }
             }
+        } else {
+            $action_msg = "Invalid protected file!";
         }
+    } else {
+        $action_msg = "Protected marker not found!";
     }
 }
 
@@ -456,18 +475,18 @@ if (isset($_POST['unlock_file_submit'])) {
     $password = $_POST['unlock_password'];
     
     $protected_path = $current_dir . DIRECTORY_SEPARATOR . $item_name . '.uca_protected';
+    $original_path = $current_dir . DIRECTORY_SEPARATOR . $item_name;
+    
     if (file_exists($protected_path)) {
         $key = 'UCA_FILE_PROTECT_' . md5($password . $item_name);
         $protected_content = file_get_contents($protected_path);
         $decoded = json_decode($protected_content, true);
         
         if ($decoded && isset($decoded['data'])) {
-            $decrypted = openssl_decrypt(base64_decode($decoded['data']), 'aes-256-cbc', $key);
-            
-            if ($decrypted !== false && $decrypted !== '') {
-                $original_path = $current_dir . DIRECTORY_SEPARATOR . $item_name;
-                
-                if ($decoded['type'] === 'folder') {
+            if ($decoded['type'] === 'folder') {
+                // For folders, decrypt the zip content from metadata
+                $decrypted = openssl_decrypt(base64_decode($decoded['data']), 'aes-256-cbc', $key);
+                if ($decrypted !== false && $decrypted !== '') {
                     $temp_zip = tempnam(sys_get_temp_dir(), 'uca') . '.zip';
                     file_put_contents($temp_zip, $decrypted);
                     $zip = new ZipArchive();
@@ -476,19 +495,34 @@ if (isset($_POST['unlock_file_submit'])) {
                         $zip->close();
                     }
                     unlink($temp_zip);
-                } else {
-                    file_put_contents($original_path, $decrypted);
+                    
+                    // Store that it's temporarily unlocked
+                    $_SESSION['temp_unlocked'][] = $item_name;
+                    
+                    header('Location: ?dir=' . urlencode($current_dir));
+                    exit;
                 }
-                
-                // Redirect to open the file
-                header('Location: ?dir=' . urlencode($current_dir));
-                exit;
             } else {
-                $action_msg = "Incorrect password!";
+                // For files, decrypt from original encrypted file
+                if (file_exists($original_path)) {
+                    $encrypted_content = file_get_contents($original_path);
+                    $decrypted = openssl_decrypt($encrypted_content, 'aes-256-cbc', $key);
+                    
+                    if ($decrypted !== false && $decrypted !== '') {
+                        file_put_contents($original_path, $decrypted);
+                        
+                        // Store that it's temporarily unlocked
+                        $_SESSION['temp_unlocked'][] = $item_name;
+                        
+                        header('Location: ?dir=' . urlencode($current_dir));
+                        exit;
+                    }
+                }
             }
+            $action_msg = "Incorrect password!";
         }
     } else {
-        $action_msg = "File not found or not protected!";
+        $action_msg = "File not protected!";
     }
 }
 
@@ -1326,15 +1360,18 @@ foreach ($path_parts as $part) {
 
                     <?php foreach ($files as $file): ?>
                     <?php 
+                    // Skip .uca_protected marker files - only show original
+                    if (substr($file, -14) === '.uca_protected') continue;
+                    
                     $file_path = $current_dir . DIRECTORY_SEPARATOR . $file;
-                    $is_protected = isProtected($file_path);
-                    $protected_marker = $is_protected ? ' (Protected)' : '';
+                    $protected_marker_file = $file_path . '.uca_protected';
+                    $is_protected = file_exists($protected_marker_file);
+                    $protected_label = $is_protected ? ' (Protected)' : '';
                     
                     $ext = pathinfo($file, PATHINFO_EXTENSION);
                     $size = filesize($file_path);
                     $mod_time = filemtime($file_path);
                     $is_img = isImage($file);
-                    $is_edit = isEditable($file);
                     $is_zip = isZip($file);
                     
                     $icon_class = 'doc';
@@ -1344,8 +1381,8 @@ foreach ($path_parts as $part) {
                     elseif ($is_zip) { $icon_class = 'archive'; }
                     elseif (in_array(strtolower($ext), ['html','htm','css','js','php','py','c','cpp','java','sql','json','xml','sh','bat','ps1','txt','md','ini','cfg','log','yaml','yml','htaccess'])) { $icon_class = 'code'; $icon = getFileIcon($ext); }
                     
-                    $type_name = ucfirst($ext) . ' File' . $protected_marker;
-                    if (!$ext) $type_name = 'File' . $protected_marker;
+                    $type_name = ucfirst($ext) . ' File' . $protected_label;
+                    if (!$ext) $type_name = 'File' . $protected_label;
                     ?>
                     <div class="file-row" data-item="<?php echo htmlspecialchars($file, ENT_QUOTES); ?>" data-is-folder="false" data-is-protected="<?php echo $is_protected ? 'true' : 'false'; ?>" onclick="event.stopPropagation()">
                         <div class="col-name">
