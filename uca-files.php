@@ -1071,7 +1071,7 @@ foreach ($path_parts as $part) {
 
                 <form method="POST" id="fileForm" class="file-list">
                     <?php if (!$is_root): ?>
-                    <div class="file-row" oncontextmenu="showContextMenu(event, '..', true)" onclick="goParent()">
+                    <div class="file-row" data-item=".." data-is-folder="true" onclick="goParent()">
                         <div class="col-name">
                             <span class="file-icon" style="color: var(--text-muted);"><i class="bi bi-arrow-up-left"></i></span>
                             <span>..</span>
@@ -1087,7 +1087,7 @@ foreach ($path_parts as $part) {
                     $folder_path = $current_dir . DIRECTORY_SEPARATOR . $folder;
                     $mod_time = filemtime($folder_path);
                     ?>
-                    <div class="file-row" oncontextmenu="showContextMenu(event, '<?php echo htmlspecialchars($folder); ?>', true)" onclick="navigateTo('<?php echo htmlspecialchars($folder); ?>')" ondblclick="navigateTo('<?php echo htmlspecialchars($folder); ?>')">
+                    <div class="file-row" data-item="<?php echo htmlspecialchars($folder, ENT_QUOTES); ?>" data-is-folder="true" onclick="navigateTo('<?php echo htmlspecialchars($folder); ?>')" ondblclick="navigateTo('<?php echo htmlspecialchars($folder); ?>')">
                         <div class="col-name">
                             <input type="checkbox" class="file-checkbox" name="items[]" value="<?php echo htmlspecialchars($folder); ?>" onclick="event.stopPropagation()">
                             <span class="file-icon folder"><i class="bi bi-folder2"></i></span>
@@ -1117,7 +1117,7 @@ foreach ($path_parts as $part) {
                     $type_name = ucfirst($ext) . ' File';
                     if (!$ext) $type_name = 'File';
                     ?>
-                    <div class="file-row" oncontextmenu="showContextMenu(event, '<?php echo htmlspecialchars($file); ?>', false)" onclick="event.stopPropagation()">
+                    <div class="file-row" data-item="<?php echo htmlspecialchars($file, ENT_QUOTES); ?>" data-is-folder="false" onclick="event.stopPropagation()">
                         <div class="col-name">
                             <input type="checkbox" class="file-checkbox" name="items[]" value="<?php echo htmlspecialchars($file); ?>" onclick="event.stopPropagation()">
                             <?php if ($is_img): ?>
@@ -1125,7 +1125,7 @@ foreach ($path_parts as $part) {
                             <?php else: ?>
                                 <span class="file-icon <?php echo $icon_class; ?>"><i class="bi <?php echo $icon; ?>"></i></span>
                             <?php endif; ?>
-                            <span ondblclick="doubleClick('<?php echo htmlspecialchars($file); ?>')"><?php echo htmlspecialchars($file); ?></span>
+                            <span data-item="<?php echo htmlspecialchars($file, ENT_QUOTES); ?>" class="file-name-click" onclick="doubleClick('<?php echo htmlspecialchars($file); ?>')"><?php echo htmlspecialchars($file); ?></span>
                         </div>
                         <div class="col-size"><?php echo formatSize($size); ?></div>
                         <div class="col-type"><?php echo $type_name; ?></div>
@@ -1502,9 +1502,17 @@ foreach ($path_parts as $part) {
             }
         }
         
-        // Context Menu
+        // Context Menu - using event delegation
+        document.querySelectorAll('.file-row').forEach(row => {
+            row.addEventListener('contextmenu', function(e) {
+                e.preventDefault();
+                const item = this.getAttribute('data-item');
+                const isFolder = this.getAttribute('data-is-folder') === 'true';
+                showContextMenu(e, item, isFolder);
+            });
+        });
+        
         function showContextMenu(e, item, isFolder) {
-            e.preventDefault();
             contextItem = item;
             contextIsFolder = isFolder;
             
@@ -1519,12 +1527,20 @@ foreach ($path_parts as $part) {
             
             document.getElementById('ctxZipItem').style.display = isZip ? 'none' : 'block';
             document.getElementById('ctxExtractItem').style.display = isZip ? 'block' : 'none';
+            document.getElementById('ctxExtractToItem').style.display = isZip ? 'block' : 'none';
             document.getElementById('ctxViewZipItem').style.display = isZip ? 'block' : 'none';
+            
+            // Show/hide protect options
+            const isProtected = item.endsWith('.uca_protected');
+            document.getElementById('ctxProtectItem').style.display = isFolder || isZip ? 'none' : (isProtected ? 'none' : 'block');
+            document.getElementById('ctxUnprotectItem').style.display = isProtected ? 'block' : 'none';
             
             // Adjust for folder
             if (isFolder) {
                 document.getElementById('ctxExtractItem').style.display = 'none';
+                document.getElementById('ctxExtractToItem').style.display = 'none';
                 document.getElementById('ctxViewZipItem').style.display = 'none';
+                document.getElementById('ctxProtectItem').style.display = 'block';
             }
             
             document.addEventListener('click', hideContextMenu);
