@@ -377,19 +377,29 @@ if (isset($_POST['protect_item_submit'])) {
             if (is_dir($item_path)) {
                 $content = json_encode(delTreeGetContent($item_path));
                 $encrypted = openssl_encrypt($content, 'aes-256-cbc', $key);
-                $protected_content = json_encode(['type'=>'folder','data'=>base64_encode($encrypted),'name'=>$item_name]);
+                $protected_content = json_encode(['type'=>'folder','data'=>base64_encode($encrypted),'name'=>$item_name,'orig_name'=>$item_name]);
             } else {
                 $content = file_get_contents($item_path);
                 $encrypted = openssl_encrypt($content, 'aes-256-cbc', $key);
                 $protected_content = json_encode(['type'=>'file','data'=>base64_encode($encrypted),'name'=>$item_name,'ext'=>pathinfo($item_name, PATHINFO_EXTENSION)]);
             }
             
+            // Keep original file/folder visible, just create the protected marker
             file_put_contents($item_path . '.uca_protected', $protected_content);
+            
+            // Also encrypt the content to replace original (so it can't be accessed without password)
             if (is_dir($item_path)) {
+                // Store encrypted folder content in a separate file
+                $encrypted_data_file = $item_path . '.uca_data';
+                file_put_contents($encrypted_data_file, $encrypted);
+                // Remove original folder
                 delTree($item_path);
             } else {
-                unlink($item_path);
+                // Encrypt and replace original file content
+                $encrypted_original = openssl_encrypt($content, 'aes-256-cbc', $key);
+                file_put_contents($item_path, $encrypted_original);
             }
+            
             $action_msg = "Password protection applied to '$item_name'";
         } else {
             $action_msg = "Item not found!";
@@ -400,6 +410,57 @@ if (isset($_POST['protect_item_submit'])) {
 if (isset($_POST['unprotect_item_submit'])) {
     $item_name = $_POST['unprotect_item'];
     $password = $_POST['unprotect_password'];
+    
+    $protected_path = $current_dir . DIRECTORY_SEPARATOR . $item_name . '.uca_protected';
+    $data_path = $current_dir . DIRECTORY_SEPARATOR . $item_name . '.uca_data';
+    
+    if (file_exists($protected_path)) {
+        $key = 'UCA_FILE_PROTECT_' . md5($password . $item_name);
+        $protected_content = file_get_contents($protected_path);
+        $decoded = json_decode($protected_content, true);
+        
+        if ($decoded && isset($decoded['data'])) {
+            $decrypted = openssl_decrypt(base64_decode($decoded['data']), 'aes-256-cbc', $key);
+            
+            if ($decrypted !== false && $decrypted !== '') {
+                $original_path = $current_dir . DIRECTORY_SEPARATOR . $item_name;
+                
+                // If it's a folder, restore from .uca_data file or from decrypted JSON
+                if ($decoded['type'] === 'folder') {
+                    // Try to restore from .uca_data first
+                    if (file_exists($data_path)) {
+                        $encrypted_data = file_get_contents($data_path);
+                        $folder_data = openssl_decrypt($encrypted_data, 'aes-256-cbc', $key);
+                        if ($folder_data) {
+                            $folder_array = json_decode($folder_data, true);
+                            mkdir($original_path, 0755, true);
+                            restoreFolderContent($original_path, json_encode($folder_array));
+                            unlink($data_path);
+                        }
+                    } else {
+                        // Restore from decrypted JSON
+                        mkdir($original_path, 0755, true);
+                        restoreFolderContent($original_path, $decrypted);
+                    }
+                } else {
+                    // For files, restore decrypted content
+                    $decrypted_content = openssl_decrypt($decrypted, 'aes-256-cbc', $key);
+                    file_put_contents($original_path, $decrypted_content);
+                }
+                
+                unlink($protected_path);
+                $action_msg = "Protection removed from '$item_name'";
+            } else {
+                $action_msg = "Incorrect password!";
+            }
+        }
+    }
+}
+
+// Unlock file to access it (temporary access)
+if (isset($_POST['unlock_file_submit'])) {
+    $item_name = $_POST['unlock_file'];
+    $password = $_POST['unlock_password'];
     
     $protected_path = $current_dir . DIRECTORY_SEPARATOR . $item_name . '.uca_protected';
     if (file_exists($protected_path)) {
@@ -413,6 +474,7 @@ if (isset($_POST['unprotect_item_submit'])) {
             if ($decrypted !== false && $decrypted !== '') {
                 $original_path = $current_dir . DIRECTORY_SEPARATOR . $item_name;
                 
+                // Restore original file/folder
                 if ($decoded['type'] === 'folder') {
                     mkdir($original_path, 0755, true);
                     restoreFolderContent($original_path, $decrypted);
@@ -420,12 +482,18 @@ if (isset($_POST['unprotect_item_submit'])) {
                     file_put_contents($original_path, $decrypted);
                 }
                 
-                unlink($protected_path);
-                $action_msg = "Protection removed from '$item_name'";
+                // Store password in session for temporary access
+                $_SESSION['temp_unlocked'][$item_name] = $password;
+                
+                // Continue to open the file
+                header('Location: ?dir=' . urlencode($current_dir) . '&open=' . urlencode($item_name));
+                exit;
             } else {
                 $action_msg = "Incorrect password!";
             }
         }
+    } else {
+        $action_msg = "File not found or not protected!";
     }
 }
 
@@ -1263,31 +1331,36 @@ foreach ($path_parts as $part) {
 
                     <?php foreach ($files as $file): ?>
                     <?php 
+                    $file_path = $current_dir . DIRECTORY_SEPARATOR . $file;
+                    $is_protected = isProtected($file_path);
+                    $protected_marker = $is_protected ? ' (Protected)' : '';
+                    
                     $ext = pathinfo($file, PATHINFO_EXTENSION);
-                    $size = filesize($current_dir . DIRECTORY_SEPARATOR . $file);
-                    $mod_time = filemtime($current_dir . DIRECTORY_SEPARATOR . $file);
+                    $size = filesize($file_path);
+                    $mod_time = filemtime($file_path);
                     $is_img = isImage($file);
                     $is_edit = isEditable($file);
                     $is_zip = isZip($file);
                     
                     $icon_class = 'doc';
                     $icon = 'bi-file-earmark';
-                    if ($is_img) { $icon_class = 'image'; $icon = 'bi-image'; }
+                    if ($is_protected) { $icon_class = 'protected'; $icon = 'bi-shield-lock'; }
+                    elseif ($is_img) { $icon_class = 'image'; $icon = 'bi-image'; }
                     elseif ($is_zip) { $icon_class = 'archive'; }
                     elseif (in_array(strtolower($ext), ['html','htm','css','js','php','py','c','cpp','java','sql','json','xml','sh','bat','ps1','txt','md','ini','cfg','log','yaml','yml','htaccess'])) { $icon_class = 'code'; $icon = getFileIcon($ext); }
                     
-                    $type_name = ucfirst($ext) . ' File';
-                    if (!$ext) $type_name = 'File';
+                    $type_name = ucfirst($ext) . ' File' . $protected_marker;
+                    if (!$ext) $type_name = 'File' . $protected_marker;
                     ?>
-                    <div class="file-row" data-item="<?php echo htmlspecialchars($file, ENT_QUOTES); ?>" data-is-folder="false" onclick="event.stopPropagation()">
+                    <div class="file-row" data-item="<?php echo htmlspecialchars($file, ENT_QUOTES); ?>" data-is-folder="false" data-is-protected="<?php echo $is_protected ? 'true' : 'false'; ?>" onclick="event.stopPropagation()">
                         <div class="col-name">
                             <input type="checkbox" class="file-checkbox" name="items[]" value="<?php echo htmlspecialchars($file); ?>" onclick="event.stopPropagation()">
-                            <?php if ($is_img): ?>
+                            <?php if ($is_img && !$is_protected): ?>
                                 <img src="?img=<?php echo urlencode($file); ?>&dir=<?php echo urlencode($current_dir); ?>" style="width:20px;height:20px;object-fit:cover;border-radius:2px;">
                             <?php else: ?>
-                                <span class="file-icon <?php echo $icon_class; ?>"><i class="bi <?php echo $icon; ?>"></i></span>
+                                <span class="file-icon <?php echo $icon_class; ?>" style="color: <?php echo $is_protected ? '#f85149' : ''; ?>"><i class="bi <?php echo $icon; ?>"></i></span>
                             <?php endif; ?>
-                            <span data-item="<?php echo htmlspecialchars($file, ENT_QUOTES); ?>" class="file-name-click" onclick="doubleClick('<?php echo htmlspecialchars($file); ?>')"><?php echo htmlspecialchars($file); ?></span>
+                            <span data-item="<?php echo htmlspecialchars($file, ENT_QUOTES); ?>" class="file-name-click" onclick="handleFileClick('<?php echo htmlspecialchars($file); ?>', <?php echo $is_protected ? 'true' : 'false'; ?>)"><?php echo htmlspecialchars($file); ?><?php echo $is_protected ? ' <i class="bi bi-shield-lock" style="color:#f85149;font-size:10px;"></i>' : ''; ?></span>
                         </div>
                         <div class="col-size"><?php echo formatSize($size); ?></div>
                         <div class="col-type"><?php echo $type_name; ?></div>
@@ -1654,6 +1727,31 @@ foreach ($path_parts as $part) {
         </div>
     </div>
 
+    <!-- Unlock File Modal -->
+    <div class="modal fade" id="unlockFileModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-shield-lock" style="color: #f85149;"></i> File is Protected</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <input type="hidden" name="unlock_file" id="unlockFileName" value="">
+                        <p style="color: var(--text-muted);">Enter password to access this protected file.</p>
+                        <div class="mb-3">
+                            <label class="form-label">Password</label>
+                            <input type="password" name="unlock_password" id="unlockFilePassword" class="form-control" required placeholder="Enter password">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="submit" name="unlock_file_submit" class="btn-uca">Unlock</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- Zip Current Folder Modal -->
     <div class="modal fade" id="zipFolderModal" tabindex="-1">
         <div class="modal-dialog">
@@ -1909,6 +2007,17 @@ foreach ($path_parts as $part) {
                 showExtractModal(filename);
             } else {
                 window.location.href = '?download=' + encodeURIComponent(filename) + '&dir=<?php echo urlencode($current_dir); ?>';
+            }
+        }
+        
+        function handleFileClick(filename, isProtected) {
+            if (isProtected) {
+                // Show password dialog to unlock
+                document.getElementById('unlockFileName').value = filename;
+                document.getElementById('unlockFilePassword').value = '';
+                new bootstrap.Modal(document.getElementById('unlockFileModal')).show();
+            } else {
+                doubleClick(filename);
             }
         }
         
