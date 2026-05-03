@@ -1,12 +1,19 @@
 # UCA Files - Web File Manager
 
-A modern, feature-rich web-based file manager with unzipper capabilities. Built with Bootstrap 5 and a sleek dark theme.
+A modern, Windows Explorer-style web-based file manager with unzipper capabilities. Built with Bootstrap 5 and a sleek dark theme inspired by VS Code.
 
 ![UCA Files](https://img.shields.io/badge/Version-1.0.0-blue)
 ![PHP](https://img.shields.io/badge/PHP-7.4+-purple)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ## Features
+
+### Windows Explorer Style UI
+- **Sidebar** - Quick access to Desktop, Documents, Downloads
+- **Toolbar** - Back, Forward, Up, Refresh, Upload, New Folder, Delete, Zip, Encrypt
+- **Address Bar** - Breadcrumb navigation through folders
+- **File List** - Details view with Name, Size, Type, Date Modified columns
+- **Status Bar** - Shows selection count and total items
 
 ### File Operations
 - **Upload** - Drag & drop or click to upload multiple files
@@ -19,10 +26,21 @@ A modern, feature-rich web-based file manager with unzipper capabilities. Built 
 - **Extract Zip** - Extract any zip file to current directory
 - **View Zip Contents** - Browse contents of zip files before extracting
 
+### Code Editor
+- **Edit Files** - Double-click to edit .html, .php, .css, .js, .py, .txt, and more
+- **Syntax Highlighting** - Monospace font for code editing
+- **Save** - Save changes with Ctrl+S or Save button
+
+### Security - Page Encryption
+- **6-Digit Passcode** - AES-256 encryption for page protection
+- **Lock/Unlock** - Encrypt and decrypt the file manager with a passcode
+- **Secure Storage** - Encrypted marker stored in .uca_lock file
+
 ### Navigation
-- **Breadcrumb Navigation** - Easy navigation through folder hierarchy
-- **Parent Directory** - Navigate to parent folder
-- **Sorting** - Sort by name, size, date, or type (ascending/descending)
+- **Breadcrumb Navigation** - Click to navigate to any parent folder
+- **Back/Forward Buttons** - Navigate through history
+- **Go Up** - Navigate to parent directory
+- **Quick Access** - Sidebar shortcuts to common locations
 
 ### File Preview
 - **Image Preview** - Click on images to view in fullscreen modal
