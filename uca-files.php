@@ -43,6 +43,92 @@ if ($current_dir === '.' || !$current_dir || !is_dir($current_dir)) {
     $current_dir = getcwd();
 }
 
+// Share link functionality
+$share_id = isset($_GET['share']) ? $_GET['share'] : null;
+if ($share_id && !isset($page_locked)) {
+    $shares_file = '.uca_shares.json';
+    $shares = file_exists($shares_file) ? json_decode(file_get_contents($shares_file), true) : [];
+    
+    if (isset($shares[$share_id])) {
+        $share = $shares[$share_id];
+        $share_path = $share['path'];
+        
+        if (file_exists($share_path)) {
+            if (is_dir($share_path)) {
+                header('Content-Type: text/html; charset=UTF-8');
+                $dh = opendir($share_path);
+                echo '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Shared: ' . htmlspecialchars(basename($share_path)) . '</title>';
+                echo '<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">';
+                echo '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">';
+                echo '<style>body{background:#1e1e1e;color:#ccc;font-family:system-ui;padding:20px;margin:0;} a{color:#0078d4;text-decoration:none;} .item{padding:12px;border-bottom:1px solid #3e3e42;display:flex;align-items:center;gap:10px;} .item:hover{background:#37373d;} h3{padding:20px;background:#252526;border-bottom:1px solid #3e3e42;margin:0;} .download-all{padding:20px;background:#252526;border-bottom:1px solid #3e3e42;}</style>';
+                echo '</head><body>';
+                echo '<h3><i class="bi bi-folder2" style="color:#dcb67a;"></i> ' . htmlspecialchars(basename($share_path)) . ' - Shared Folder</h3>';
+                echo '<div class="download-all"><a href="?share=' . $share_id . '&download=all" style="font-size:16px;"><i class="bi bi-download"></i> Download Entire Folder as ZIP</a></div>';
+                while (($item = readdir($dh)) !== FALSE) {
+                    if ($item === '.' || $item === '..') continue;
+                    $item_path = $share_path . DIRECTORY_SEPARATOR . $item;
+                    $is_dir = is_dir($item_path);
+                    $size = $is_dir ? '--' : formatSize(filesize($item_path));
+                    echo '<div class="item"><i class="bi ' . ($is_dir ? 'bi-folder2' : 'bi-file-earmark') . '" style="color:' . ($is_dir ? '#dcb67a' : '#569cd6') . ';"></i> ';
+                    if ($is_dir) {
+                        echo htmlspecialchars($item) . '/ <span style="color:#858585;font-size:12px;">Folder</span>';
+                    } else {
+                        echo '<a href="?share=' . $share_id . '&file=' . urlencode($item) . '">' . htmlspecialchars($item) . '</a> <span style="color:#858585;font-size:12px;">' . $size . '</span>';
+                    }
+                    echo '</div>';
+                }
+                closedir($dh);
+                echo '</body></html>';
+                exit;
+            } elseif (is_file($share_path)) {
+                header('Content-Type: application/octet-stream');
+                header('Content-Disposition: attachment; filename="' . basename($share_path) . '"');
+                header('Content-Length: ' . filesize($share_path));
+                readfile($share_path);
+                exit;
+            }
+        }
+    }
+}
+
+if (isset($_GET['share']) && isset($_GET['download']) && $_GET['download'] === 'all') {
+    $shares_file = '.uca_shares.json';
+    $shares = file_exists($shares_file) ? json_decode(file_get_contents($shares_file), true) : [];
+    $share_id = $_GET['share'];
+    if (isset($shares[$share_id]) && is_dir($shares[$share_id]['path'])) {
+        $share_path = $shares[$share_id]['path'];
+        $zip_name = basename($share_path) . '.zip';
+        $zip = new ZipArchive();
+        if ($zip->open($zip_name, ZipArchive::CREATE) === TRUE) {
+            addToZip($zip, $share_path, basename($share_path));
+            $zip->close();
+            header('Content-Type: application/octet-stream');
+            header('Content-Disposition: attachment; filename="' . $zip_name . '"');
+            header('Content-Length: ' . filesize($zip_name));
+            readfile($zip_name);
+            unlink($zip_name);
+            exit;
+        }
+    }
+}
+
+if (isset($_GET['share']) && isset($_GET['file'])) {
+    $shares_file = '.uca_shares.json';
+    $shares = file_exists($shares_file) ? json_decode(file_get_contents($shares_file), true) : [];
+    $share_id = $_GET['share'];
+    $file = $_GET['file'];
+    if (isset($shares[$share_id])) {
+        $share_path = $shares[$share_id]['path'] . DIRECTORY_SEPARATOR . $file;
+        if (file_exists($share_path) && is_file($share_path)) {
+            header('Content-Type: application/octet-stream');
+            header('Content-Disposition: attachment; filename="' . $file . '"');
+            header('Content-Length: ' . filesize($share_path));
+            readfile($share_path);
+            exit;
+        }
+    }
+}
+
 $upload_msg = '';
 $action_msg = '';
 $edit_file = isset($_GET['edit']) ? $_GET['edit'] : null;
@@ -208,6 +294,44 @@ if (isset($_POST['rename_item'])) {
     if ($old_name && $new_name && file_exists($old_path) && !file_exists($new_path)) {
         rename($old_path, $new_path);
         $action_msg = "Renamed to '$new_name'";
+    }
+}
+
+if (isset($_POST['create_share'])) {
+    $item_name = $_POST['share_item'];
+    $share_path = $current_dir . DIRECTORY_SEPARATOR . $item_name;
+    
+    if (file_exists($share_path)) {
+        $shares_file = '.uca_shares.json';
+        $shares = file_exists($shares_file) ? json_decode(file_get_contents($shares_file), true) : [];
+        
+        $share_id = bin2hex(random_bytes(8));
+        $shares[$share_id] = [
+            'path' => $share_path,
+            'name' => $item_name,
+            'created' => time()
+        ];
+        
+        file_put_contents($shares_file, json_encode($shares));
+        $share_url = (isset($_SERVER['HTTPS']) ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . dirname($_SERVER['REQUEST_URI']) . '/?share=' . $share_id;
+        $action_msg = "Share link created for '$item_name'! Link copied to clipboard.";
+        
+        echo '<script>navigator.clipboard.writeText("' . $share_url . '");</script>';
+    }
+}
+
+if (isset($_POST['zip_folder'])) {
+    $folder_name = $_POST['zip_folder_name'];
+    $folder_path = $current_dir . DIRECTORY_SEPARATOR . $folder_name;
+    
+    if (is_dir($folder_path)) {
+        $zip_name = $folder_name . '_' . date('Y-m-d') . '.zip';
+        $zip = new ZipArchive();
+        if ($zip->open($zip_name, ZipArchive::CREATE) === TRUE) {
+            addToZip($zip, $folder_path, $folder_name);
+            $zip->close();
+            $action_msg = "Created $zip_name";
+        }
     }
 }
 
@@ -1163,6 +1287,9 @@ foreach ($path_parts as $part) {
         <div class="context-menu-item" onclick="contextDownload()">
             <i class="bi bi-download"></i> Download
         </div>
+        <div class="context-menu-item" onclick="contextShare()" id="ctxShareItem">
+            <i class="bi bi-link-45deg"></i> Create Share Link
+        </div>
         <div class="context-menu-divider"></div>
         <div class="context-menu-item" onclick="contextZip()" id="ctxZipItem">
             <i class="bi bi-file-earmark-zip"></i> Compress to ZIP
@@ -1189,6 +1316,34 @@ foreach ($path_parts as $part) {
         </div>
         <div class="context-menu-item" onclick="contextDelete()" style="color: #f85149;">
             <i class="bi bi-trash"></i> Delete
+        </div>
+    </div>
+
+    <!-- Background Context Menu (for empty space) -->
+    <div class="context-menu" id="bgContextMenu">
+        <div class="context-menu-item" onclick="showNewFolderModal()">
+            <i class="bi bi-folder-plus"></i> New Folder
+        </div>
+        <div class="context-menu-item" onclick="showNewFileModal()">
+            <i class="bi bi-file-earmark-plus"></i> New File
+        </div>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item" onclick="showZipFolderModal()">
+            <i class="bi bi-file-earmark-zip"></i> Compress Current Folder
+        </div>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item" onclick="showProtectSelectedModal()" id="bgProtectItem" style="display:none;">
+            <i class="bi bi-shield-lock"></i> Password Protect
+        </div>
+        <div class="context-menu-item" onclick="showShareModal()" id="bgShareItem" style="display:none;">
+            <i class="bi bi-link-45deg"></i> Create Share Link
+        </div>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item" onclick="showEncryptModal()">
+            <i class="bi bi-shield-lock"></i> Encrypt Page
+        </div>
+        <div class="context-menu-item" onclick="showPropertiesModal()">
+            <i class="bi bi-info-circle"></i> Properties
         </div>
     </div>
 
@@ -1461,6 +1616,55 @@ foreach ($path_parts as $part) {
         </div>
     </div>
 
+    <!-- Zip Current Folder Modal -->
+    <div class="modal fade" id="zipFolderModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-file-earmark-zip"></i> Compress Folder</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <p style="color: var(--text-muted);">Create a zip archive of the current folder.</p>
+                        <div class="mb-3">
+                            <label class="form-label">Folder to compress</label>
+                            <input type="text" name="zip_folder_name" class="form-control" value="<?php echo basename($current_dir); ?>" readonly>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="submit" name="zip_folder" class="btn-uca">Create ZIP</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Share Modal -->
+    <div class="modal fade" id="shareModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-link-45deg"></i> Create Share Link</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST">
+                    <div class="modal-body">
+                        <input type="hidden" name="share_item" id="shareItemName">
+                        <p style="color: var(--text-muted);">Create a public share link for this file or folder. Anyone with the link can access it.</p>
+                        <div class="mb-3">
+                            <label class="form-label">Item</label>
+                            <input type="text" class="form-control" id="shareItemDisplay" readonly>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="submit" name="create_share" class="btn-uca"><i class="bi bi-link-45deg"></i> Create Link</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <?php endif; ?>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
@@ -1691,6 +1895,9 @@ foreach ($path_parts as $part) {
         function checkZipSelection() {
             const checkboxes = document.querySelectorAll('input[name="items[]"]:checked');
             const unzipBtn = document.getElementById('unzipBtn');
+            const bgProtectItem = document.getElementById('bgProtectItem');
+            const bgShareItem = document.getElementById('bgShareItem');
+            
             if (checkboxes.length === 1) {
                 const file = checkboxes[0].value;
                 const ext = file.split('.').pop().toLowerCase();
@@ -1699,9 +1906,100 @@ foreach ($path_parts as $part) {
                 } else {
                     unzipBtn.style.display = 'none';
                 }
+                bgProtectItem.style.display = 'block';
+                bgShareItem.style.display = 'block';
+            } else if (checkboxes.length > 1) {
+                unzipBtn.style.display = 'none';
+                bgProtectItem.style.display = 'none';
+                bgShareItem.style.display = 'block';
             } else {
                 unzipBtn.style.display = 'none';
+                bgProtectItem.style.display = 'none';
+                bgShareItem.style.display = 'none';
             }
+        }
+        
+        // Background context menu (click on empty space)
+        document.querySelector('.file-list-container').addEventListener('contextmenu', function(e) {
+            if (e.target.closest('.file-row')) return;
+            e.preventDefault();
+            
+            const menu = document.getElementById('bgContextMenu');
+            menu.style.display = 'block';
+            menu.style.left = e.pageX + 'px';
+            menu.style.top = e.pageY + 'px';
+            
+            document.addEventListener('click', hideBackgroundMenu);
+        });
+        
+        function hideBackgroundMenu() {
+            document.getElementById('bgContextMenu').style.display = 'none';
+            document.removeEventListener('click', hideBackgroundMenu);
+        }
+        
+        function showNewFolderModal() {
+            new bootstrap.Modal(document.getElementById('newFolderModal')).show();
+            hideBackgroundMenu();
+        }
+        
+        function showNewFileModal() {
+            new bootstrap.Modal(document.getElementById('newFileModal')).show();
+            hideBackgroundMenu();
+        }
+        
+        function showZipFolderModal() {
+            new bootstrap.Modal(document.getElementById('zipFolderModal')).show();
+            hideBackgroundMenu();
+        }
+        
+        function showProtectSelectedModal() {
+            const checkboxes = document.querySelectorAll('input[name="items[]"]:checked');
+            if (checkboxes.length > 0) {
+                document.getElementById('protectItemName').value = checkboxes[0].value;
+                new bootstrap.Modal(document.getElementById('protectModal')).show();
+            }
+            hideBackgroundMenu();
+        }
+        
+        function showShareModal() {
+            const checkboxes = document.querySelectorAll('input[name="items[]"]:checked');
+            if (checkboxes.length > 0) {
+                document.getElementById('shareItemName').value = checkboxes[0].value;
+                document.getElementById('shareItemDisplay').value = checkboxes[0].value;
+                new bootstrap.Modal(document.getElementById('shareModal')).show();
+            }
+            hideBackgroundMenu();
+        }
+        
+        function showEncryptModal() {
+            new bootstrap.Modal(document.getElementById('encryptModal')).show();
+            hideBackgroundMenu();
+        }
+        
+        function showPropertiesModal() {
+            // Show current folder properties
+            const folderName = '<?php echo basename($current_dir); ?>';
+            const formData = new FormData();
+            formData.append('get_properties', folderName);
+            
+            fetch('', { method: 'POST', body: formData })
+                .then(r => r.text())
+                .then(html => {
+                    const match = html.match(/<div id="propsContent">([\s\S]*?)<\/div>\s*<div class="modal-footer">/);
+                    document.getElementById('propsContent').innerHTML = match ? match[1] : 'Cannot load properties';
+                });
+            
+            new bootstrap.Modal(document.getElementById('propertiesModal')).show();
+            hideBackgroundMenu();
+        }
+        
+        function contextShare() {
+            if (contextItem) {
+                document.getElementById('shareItemName').value = contextItem;
+                document.getElementById('shareItemDisplay').value = contextItem;
+                new bootstrap.Modal(document.getElementById('shareModal')).show();
+            }
+            hideContextMenu();
         }
         
         function showExtractModal(filename) {
