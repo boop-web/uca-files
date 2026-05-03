@@ -29,8 +29,10 @@ if (isset($_POST['encrypt_page'])) {
 
 if (isset($_POST['decrypt_page'])) {
     $passcode = '';
+    // Handle both naming conventions (decrypt_passcode or decrypt_passcode1-6)
     for ($i = 1; $i <= 6; $i++) {
-        $passcode .= $_POST['decrypt_passcode' . $i] ?? '';
+        $key = 'decrypt_passcode' . ($i == 1 ? '' : $i);
+        $passcode .= $_POST[$key] ?? '';
     }
     if (preg_match('/^\d{6}$/', $passcode)) {
         if (file_exists($lock_file)) {
@@ -375,29 +377,31 @@ if (isset($_POST['protect_item_submit'])) {
             $key = 'UCA_FILE_PROTECT_' . md5($password . $item_name);
             
             if (is_dir($item_path)) {
-                $content = json_encode(delTreeGetContent($item_path));
+                // For folders - create encrypted archive
+                $temp_zip = tempnam(sys_get_temp_dir(), 'uca') . '.zip';
+                $zip = new ZipArchive();
+                if ($zip->open($temp_zip, ZipArchive::CREATE) === TRUE) {
+                    addToZip($zip, $item_path, $item_name);
+                    $zip->close();
+                }
+                $content = file_get_contents($temp_zip);
                 $encrypted = openssl_encrypt($content, 'aes-256-cbc', $key);
-                $protected_content = json_encode(['type'=>'folder','data'=>base64_encode($encrypted),'name'=>$item_name,'orig_name'=>$item_name]);
+                $protected_content = json_encode(['type'=>'folder','data'=>base64_encode($encrypted),'name'=>$item_name]);
+                unlink($temp_zip);
             } else {
+                // For files
                 $content = file_get_contents($item_path);
                 $encrypted = openssl_encrypt($content, 'aes-256-cbc', $key);
                 $protected_content = json_encode(['type'=>'file','data'=>base64_encode($encrypted),'name'=>$item_name,'ext'=>pathinfo($item_name, PATHINFO_EXTENSION)]);
             }
             
-            // Keep original file/folder visible, just create the protected marker
+            // Create protected marker and replace content
             file_put_contents($item_path . '.uca_protected', $protected_content);
             
-            // Also encrypt the content to replace original (so it can't be accessed without password)
             if (is_dir($item_path)) {
-                // Store encrypted folder content in a separate file
-                $encrypted_data_file = $item_path . '.uca_data';
-                file_put_contents($encrypted_data_file, $encrypted);
-                // Remove original folder
                 delTree($item_path);
             } else {
-                // Encrypt and replace original file content
-                $encrypted_original = openssl_encrypt($content, 'aes-256-cbc', $key);
-                file_put_contents($item_path, $encrypted_original);
+                file_put_contents($item_path, $encrypted);
             }
             
             $action_msg = "Password protection applied to '$item_name'";
@@ -412,8 +416,6 @@ if (isset($_POST['unprotect_item_submit'])) {
     $password = $_POST['unprotect_password'];
     
     $protected_path = $current_dir . DIRECTORY_SEPARATOR . $item_name . '.uca_protected';
-    $data_path = $current_dir . DIRECTORY_SEPARATOR . $item_name . '.uca_data';
-    
     if (file_exists($protected_path)) {
         $key = 'UCA_FILE_PROTECT_' . md5($password . $item_name);
         $protected_content = file_get_contents($protected_path);
@@ -425,27 +427,18 @@ if (isset($_POST['unprotect_item_submit'])) {
             if ($decrypted !== false && $decrypted !== '') {
                 $original_path = $current_dir . DIRECTORY_SEPARATOR . $item_name;
                 
-                // If it's a folder, restore from .uca_data file or from decrypted JSON
                 if ($decoded['type'] === 'folder') {
-                    // Try to restore from .uca_data first
-                    if (file_exists($data_path)) {
-                        $encrypted_data = file_get_contents($data_path);
-                        $folder_data = openssl_decrypt($encrypted_data, 'aes-256-cbc', $key);
-                        if ($folder_data) {
-                            $folder_array = json_decode($folder_data, true);
-                            mkdir($original_path, 0755, true);
-                            restoreFolderContent($original_path, json_encode($folder_array));
-                            unlink($data_path);
-                        }
-                    } else {
-                        // Restore from decrypted JSON
-                        mkdir($original_path, 0755, true);
-                        restoreFolderContent($original_path, $decrypted);
+                    // Extract zip content
+                    $temp_zip = tempnam(sys_get_temp_dir(), 'uca') . '.zip';
+                    file_put_contents($temp_zip, $decrypted);
+                    $zip = new ZipArchive();
+                    if ($zip->open($temp_zip) === TRUE) {
+                        $zip->extractTo($current_dir);
+                        $zip->close();
                     }
+                    unlink($temp_zip);
                 } else {
-                    // For files, restore decrypted content
-                    $decrypted_content = openssl_decrypt($decrypted, 'aes-256-cbc', $key);
-                    file_put_contents($original_path, $decrypted_content);
+                    file_put_contents($original_path, $decrypted);
                 }
                 
                 unlink($protected_path);
@@ -474,19 +467,21 @@ if (isset($_POST['unlock_file_submit'])) {
             if ($decrypted !== false && $decrypted !== '') {
                 $original_path = $current_dir . DIRECTORY_SEPARATOR . $item_name;
                 
-                // Restore original file/folder
                 if ($decoded['type'] === 'folder') {
-                    mkdir($original_path, 0755, true);
-                    restoreFolderContent($original_path, $decrypted);
+                    $temp_zip = tempnam(sys_get_temp_dir(), 'uca') . '.zip';
+                    file_put_contents($temp_zip, $decrypted);
+                    $zip = new ZipArchive();
+                    if ($zip->open($temp_zip) === TRUE) {
+                        $zip->extractTo($current_dir);
+                        $zip->close();
+                    }
+                    unlink($temp_zip);
                 } else {
                     file_put_contents($original_path, $decrypted);
                 }
                 
-                // Store password in session for temporary access
-                $_SESSION['temp_unlocked'][$item_name] = $password;
-                
-                // Continue to open the file
-                header('Location: ?dir=' . urlencode($current_dir) . '&open=' . urlencode($item_name));
+                // Redirect to open the file
+                header('Location: ?dir=' . urlencode($current_dir));
                 exit;
             } else {
                 $action_msg = "Incorrect password!";
